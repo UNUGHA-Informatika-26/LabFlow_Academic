@@ -2,12 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../../core/connectivity/connectivity_cubit.dart';
+import '../../../../core/connectivity/connectivity_state.dart';
+import '../../../../core/offline/admin_entity_draft_store.dart';
+import '../../../../core/offline/conflict_resolution.dart';
+import '../../../../shared/presentation/dialogs/labflow_conflict_resolution_dialog.dart';
 import '../../../../shared/presentation/notifications/labflow_notification.dart';
 import '../../../../shared/presentation/states/labflow_connection_error_state.dart';
 import '../../../../shared/presentation/states/labflow_loading_state.dart';
 import '../../../../shared/presentation/states/labflow_no_search_results_state.dart';
 import '../../../asset/data/asset_service.dart';
 import '../../../asset/domain/laboratory_asset.dart';
+import '../../../auth/data/auth_service.dart';
 import '../../../laboratory/data/lab_membership_service.dart';
 import '../../../laboratory/domain/laboratory.dart';
 import '../cubit/asset_management_cubit.dart';
@@ -35,6 +41,202 @@ class _AssetManagementView extends StatefulWidget {
 
 class _AssetManagementViewState extends State<_AssetManagementView> {
   final _searchController = TextEditingController();
+  final AdminEntityDraftStore _draftStore =
+      SharedPreferencesAdminEntityDraftStore();
+  final AuthService _authService = AuthService();
+  final AssetService _assetService = AssetService();
+  List<OfflineEntityDraft> _drafts = const <OfflineEntityDraft>[];
+
+  static const Map<String, String> _fieldLabels = <String, String>{
+    'name': 'Nama Aset',
+    'code': 'Kode Aset',
+    'category': 'Kategori',
+    'stock': 'Stock',
+    'location': 'Lokasi Aset',
+    'description': 'Deskripsi',
+    'status': 'Status Aset',
+    'condition': 'Kondisi Aset',
+    'imageUrl': 'Foto Aset',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDrafts();
+  }
+
+  Future<void> _loadDrafts() async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+    final drafts = await _draftStore.listDrafts(
+      uid,
+      entityType: DraftEntityType.asset,
+    );
+    if (!mounted) return;
+    setState(() => _drafts = drafts);
+  }
+
+  Future<void> _deleteDraft(OfflineEntityDraft draft) async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+    await _draftStore.removeDraft(uid, draft.draftId);
+    await _loadDrafts();
+    if (!mounted) return;
+    showLabFlowNotification(
+      context: context,
+      title: 'Draft dihapus',
+      message: 'Draft lokal aset telah dihapus.',
+      type: LabFlowNotificationType.info,
+    );
+  }
+
+  Future<void> _resumeDraftEdit(OfflineEntityDraft draft) async {
+    if (draft.isCreateDraft) {
+      await _createAsset();
+      return;
+    }
+    final assetId = draft.entityId!;
+    final result = await context.push<String>(
+      '/lab-admin/assets/$assetId/edit',
+    );
+    await _loadDrafts();
+    if (!mounted) return;
+    if (result == 'updated') {
+      showLabFlowNotification(
+        context: context,
+        title: 'Aset diperbarui',
+        message: 'Data aset berhasil diperbarui.',
+        type: LabFlowNotificationType.success,
+      );
+    }
+  }
+
+  Future<void> _syncDraft(
+    OfflineEntityDraft draft, {
+    Map<String, ConflictResolutionDecision>? conflictDecisions,
+  }) async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+
+    final syncingDraft = draft.copyWith(
+      syncStatus: DraftSyncStatus.syncing,
+      clearError: true,
+    );
+    await _draftStore.saveDraft(uid, syncingDraft);
+    await _loadDrafts();
+
+    try {
+      final profile = await _authService.getCurrentUserProfile(
+        forceRefresh: true,
+      );
+      if (profile.role != 'lab_admin') {
+        throw const AssetException(
+          'Hanya Lab Admin aktif yang dapat menyinkronkan draft aset.',
+        );
+      }
+
+      final name = (draft.data['name'] as String? ?? '').trim();
+      final code = (draft.data['code'] as String? ?? '').trim().toUpperCase();
+      final category = (draft.data['category'] as String? ?? '').trim();
+      final location = (draft.data['location'] as String? ?? '').trim();
+      final description = (draft.data['description'] as String? ?? '').trim();
+      final rawStock = draft.data['stock'];
+      final stock = switch (rawStock) {
+        final int v => v,
+        final num v => v.toInt(),
+        final String v => int.tryParse(v) ?? 1,
+        _ => 1,
+      };
+      final condition = (draft.data['condition'] as String? ?? 'good').trim();
+      final status = (draft.data['status'] as String? ?? 'available').trim();
+      final imageUrl = (draft.data['imageUrl'] as String? ?? '').trim();
+
+      if (draft.isCreateDraft) {
+        final laboratoryId =
+            (draft.data['laboratoryId'] as String? ?? '').trim();
+        await _assetService.createAsset(
+          laboratoryId: laboratoryId,
+          code: code,
+          name: name,
+          category: category,
+          description: description,
+          location: location,
+          stock: stock,
+          condition: condition,
+          imageUrl: imageUrl,
+        );
+      } else {
+        await _assetService.updateAsset(
+          assetId: draft.entityId!,
+          code: code,
+          name: name,
+          category: category,
+          description: description,
+          location: location,
+          stock: stock,
+          status: status,
+          condition: condition,
+          imageUrl: imageUrl,
+          baselineData: draft.baselineData,
+          conflictDecisions: conflictDecisions,
+        );
+      }
+
+      await _draftStore.removeDraft(uid, draft.draftId);
+      await _loadDrafts();
+      if (!mounted) return;
+      showLabFlowNotification(
+        context: context,
+        title: 'Sinkronisasi berhasil',
+        message: 'Draft aset $code berhasil disinkronkan ke server.',
+        type: LabFlowNotificationType.success,
+      );
+    } on ConflictDetectedException catch (conflictError) {
+      final conflictDraft = draft.copyWith(
+        syncStatus: DraftSyncStatus.conflict,
+        lastError: conflictError.message,
+        conflicts: conflictError.analysis.conflicts,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      await _draftStore.saveDraft(uid, conflictDraft);
+      await _loadDrafts();
+      if (!mounted) return;
+      final decisions = await showLabFlowConflictResolutionDialog(
+        context: context,
+        analysis: conflictError.analysis,
+        fieldLabels: _fieldLabels,
+      );
+      if (decisions != null && mounted) {
+        final resolved = conflictError.analysis.resolveWithDecisions(decisions);
+        final updatedDraft = conflictDraft.copyWith(
+          data: resolved,
+          updatedAt: DateTime.now().toUtc(),
+        );
+        await _draftStore.saveDraft(uid, updatedDraft);
+        await _syncDraft(updatedDraft, conflictDecisions: decisions);
+      }
+    } on Object catch (error) {
+      final message = switch (error) {
+        final AssetException e => e.message,
+        final AuthServiceException e => e.message,
+        _ => 'Sinkronisasi gagal. Periksa koneksi Anda lalu coba lagi.',
+      };
+      final failedDraft = draft.copyWith(
+        syncStatus: DraftSyncStatus.failed,
+        lastError: message,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      await _draftStore.saveDraft(uid, failedDraft);
+      await _loadDrafts();
+      if (!mounted) return;
+      showLabFlowNotification(
+        context: context,
+        title: 'Sinkronisasi belum berhasil',
+        message: message,
+        type: LabFlowNotificationType.warning,
+      );
+    }
+  }
 
   @override
   void dispose() {
@@ -44,6 +246,7 @@ class _AssetManagementViewState extends State<_AssetManagementView> {
 
   Future<void> _createAsset() async {
     final created = await context.push<bool>('/lab-admin/assets/create');
+    await _loadDrafts();
     if (!mounted || created != true) return;
     showLabFlowNotification(
       context: context,
@@ -55,6 +258,7 @@ class _AssetManagementViewState extends State<_AssetManagementView> {
 
   Future<void> _openAssetDetail(LaboratoryAsset asset) async {
     final result = await context.push<String>('/lab-admin/assets/${asset.id}');
+    await _loadDrafts();
     if (!mounted || result != 'deleted') return;
     showLabFlowNotification(
       context: context,
@@ -337,12 +541,49 @@ class _AssetManagementViewState extends State<_AssetManagementView> {
       itemCount: assets.length + 1,
       itemBuilder: (context, index) {
         if (index == 0) {
-          return Padding(
-            padding: const EdgeInsets.only(bottom: 14),
-            child: Text(
-              '${assets.length} dari ${state.assets.length} aset',
-              style: const TextStyle(fontSize: 12, color: Color(0xFF7A8190)),
-            ),
+          final connectivity = context.watch<ConnectivityCubit?>();
+          final isOnline =
+              connectivity == null ||
+              connectivity.state.status != ConnectivityStatus.offline;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (_drafts.isNotEmpty) ...[
+                LabFlowOfflineDraftsPanel(
+                  drafts: _drafts,
+                  isOnline: isOnline,
+                  titleBuilder: (draft) {
+                    final name = (draft.data['name'] as String? ?? '').trim();
+                    final code = (draft.data['code'] as String? ?? '').trim();
+                    final label = name.isNotEmpty ? name : 'Aset Tanpa Nama';
+                    return draft.isCreateDraft
+                        ? '[Buat Baru] $label'
+                        : '[Edit] ${code.isNotEmpty ? "$code · " : ""}$label';
+                  },
+                  subtitleBuilder: (draft) {
+                    final cat =
+                        (draft.data['category'] as String? ?? '-').trim();
+                    final loc =
+                        (draft.data['location'] as String? ?? '-').trim();
+                    return 'Kategori: ${cat.isEmpty ? "-" : cat} · Lokasi: ${loc.isEmpty ? "-" : loc}';
+                  },
+                  onResumeEdit: _resumeDraftEdit,
+                  onSyncDraft: _syncDraft,
+                  onDeleteDraft: _deleteDraft,
+                ),
+                const SizedBox(height: 14),
+              ],
+              Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Text(
+                  '${assets.length} dari ${state.assets.length} aset',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF7A8190),
+                  ),
+                ),
+              ),
+            ],
           );
         }
         final asset = assets[index - 1];

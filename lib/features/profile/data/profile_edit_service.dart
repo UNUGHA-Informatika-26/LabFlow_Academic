@@ -22,14 +22,24 @@ abstract class ProfileEditor {
 }
 
 class ProfileEditService implements ProfileEditor {
-  ProfileEditService({AuthService? authService, FirebaseFirestore? firestore})
-    : _authService = authService ?? AuthService(),
-      _firestore = firestore ?? FirebaseFirestore.instance;
+  ProfileEditService({
+    AuthService? authService,
+    FirebaseFirestore? firestore,
+    AssetImageService? images,
+    ConnectivityService? connectivity,
+  }) : _authService = authService ?? AuthService(),
+       _firestore = firestore ?? FirebaseFirestore.instance,
+       _imagesOverride = images,
+       _connectivityOverride = connectivity;
 
   final AuthService _authService;
   final FirebaseFirestore _firestore;
-  final AssetImageService _images = AssetImageService();
-  final ConnectivityService _connectivity = PluginConnectivityService();
+  final AssetImageService? _imagesOverride;
+  final ConnectivityService? _connectivityOverride;
+
+  AssetImageService get _images => _imagesOverride ?? AssetImageService();
+  ConnectivityService get _connectivity =>
+      _connectivityOverride ?? PluginConnectivityService();
 
   static String? validateFullName(String value) {
     final clean = value.trim();
@@ -140,8 +150,43 @@ class ProfileEditService implements ProfileEditor {
       } else if (removePhoto) {
         update['profilePhotoUrl'] = null;
       }
+      String normalize(Object? value) => value is String ? value.trim() : '';
+      final photoChanged =
+          update.containsKey('profilePhotoUrl') &&
+          normalize(profile.profilePhotoUrl) !=
+              normalize(update['profilePhotoUrl']);
+      final changed =
+          normalize(profile.fullName) != normalize(update['fullName']) ||
+          normalize(profile.phoneNumber) != normalize(update['phoneNumber']) ||
+          (profile.isStudent &&
+              (normalize(profile.nim) != normalize(update['nim']) ||
+                  normalize(profile.studyProgram) !=
+                      normalize(update['studyProgram']) ||
+                  profile.semester != update['semester'])) ||
+          (profile.isLabAdmin &&
+              (normalize(profile.nip) != normalize(update['nip']) ||
+                  normalize(profile.nidn) != normalize(update['nidn']))) ||
+          photoChanged;
+      if (!changed) return profile;
+      final currentValues = <String, Object?>{
+        'fullName': profile.fullName,
+        'phoneNumber': profile.phoneNumber,
+        'nim': profile.nim,
+        'studyProgram': profile.studyProgram,
+        'semester': profile.semester,
+        'nip': profile.nip,
+        'nidn': profile.nidn,
+        'profilePhotoUrl': profile.profilePhotoUrl,
+      };
+      update.removeWhere(
+        (key, value) =>
+            currentValues.containsKey(key) &&
+            (key == 'semester'
+                ? currentValues[key] == value
+                : normalize(currentValues[key]) == normalize(value)),
+      );
       await _firestore.collection('users').doc(uid).update(update);
-      return await _authService.getCurrentUserProfile();
+      return await _authService.getCurrentUserProfile(forceRefresh: true);
     } on AssetImageException catch (error) {
       throw ProfileEditException(error.message);
     } on FirebaseException catch (exception) {

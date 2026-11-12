@@ -124,9 +124,11 @@ class _ProfileEditViewState extends State<_ProfileEditView> {
                 ],
               ),
             ),
-            _ => ListView(
+            _ => SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 40),
-              children: [
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
                 Center(
                   child: Column(
                     children: [
@@ -255,7 +257,9 @@ class _ProfileEditViewState extends State<_ProfileEditView> {
                   ),
                 const SizedBox(height: 14),
                 FilledButton(
-                  onPressed: state.status == ProfileEditStatus.saving
+                  onPressed:
+                      state.status == ProfileEditStatus.saving ||
+                          !state.hasChanges
                       ? null
                       : context.read<ProfileEditCubit>().save,
                   style: FilledButton.styleFrom(
@@ -276,6 +280,16 @@ class _ProfileEditViewState extends State<_ProfileEditView> {
                           style: TextStyle(fontSize: 16),
                         ),
                 ),
+                if (!state.hasChanges)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Center(
+                      child: Text(
+                        'Belum ada perubahan untuk disimpan.',
+                        style: TextStyle(color: Color(0xFF6B7280)),
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 24),
                 const Text(
                   'Email, role, status, UID, dan assignment laboratorium '
@@ -286,7 +300,8 @@ class _ProfileEditViewState extends State<_ProfileEditView> {
                     color: Color(0xFF6B7280),
                   ),
                 ),
-              ],
+                ],
+              ),
             ),
           },
         ),

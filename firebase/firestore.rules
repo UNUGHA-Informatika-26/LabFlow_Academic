@@ -142,6 +142,54 @@ service cloud.firestore {
         ).data.active == true;
     }
 
+    function validLaboratoryName(name) {
+      return name is string
+        && name.size() >= 3
+        && name.size() <= 100
+        && name.matches('.*[A-Za-z0-9].*')
+        && name.replace('[^A-Za-z0-9]', '').size() >= 3;
+    }
+
+    function validLaboratoryCode(code) {
+      return code is string
+        && code.matches('^LAB-[A-Z0-9]+-[0-9]{2}$');
+    }
+
+    function validLaboratoryData(data) {
+      return data.keys().hasAll([
+          'name', 'code', 'description', 'location', 'status',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'code', 'description', 'location', 'status',
+          'createdAt', 'updatedAt'
+        ])
+        && validLaboratoryName(data.name)
+        && validLaboratoryCode(data.code)
+        && data.description is string
+        && data.location is string
+        && data.location.size() > 0
+        && data.status in ['active', 'inactive']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function validLaboratoryUpdate(newData, oldData) {
+      let changed = newData.diff(oldData).affectedKeys();
+      return changed.size() > 0
+        && changed.hasOnly([
+          'name', 'code', 'description', 'location', 'status', 'updatedAt'
+        ])
+        && 'updatedAt' in changed
+        && newData.updatedAt is timestamp
+        && (!('createdAt' in oldData) || newData.createdAt == oldData.createdAt)
+        && (!('name' in changed) || ('name' in newData && validLaboratoryName(newData.name)))
+        && (!('code' in changed) || ('code' in newData && validLaboratoryCode(newData.code)))
+        && (!('description' in changed) || ('description' in newData && newData.description is string))
+        && (!('location' in changed) || ('location' in newData && newData.location is string && newData.location.size() > 0))
+        && (!('status' in changed) || ('status' in newData && newData.status in ['active', 'inactive']));
+    }
+
     function validAssetData(data) {
       return data.keys().hasAll([
           'labId',
@@ -613,8 +661,90 @@ service cloud.firestore {
 
       allow create, delete: if isSuperadmin();
 
-      allow update: if (isSuperadmin() && request.auth.uid != userId)
-        || validSelfProfileUpdate(userId);
+      function validVerifiedEmailSync() {
+        let changed = request.resource.data.diff(resource.data).affectedKeys();
+        return isActive()
+          && request.auth.uid == userId
+          && changed.hasOnly(['email', 'emailVerified', 'updatedAt'])
+          && request.resource.data.email == request.auth.token.email
+          && request.auth.token.email_verified == true
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.status == resource.data.status;
+      }
+
+      allow update: if (isSuperadmin()
+          && request.auth.uid != userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'fullName', 'role', 'status', 'phoneNumber', 'nim',
+            'studyProgram', 'semester', 'nip', 'nidn', 'updatedAt'
+          ]))
+        || validSelfProfileUpdate(userId)
+        || validVerifiedEmailSync();
+    }
+
+    // =========================================================
+    // EMAIL CHANGE REQUESTS (Zero-Cost Spark Approval Workflow)
+    // =========================================================
+
+    match /email_change_requests/{requestId} {
+      function validEmailChangeRequestCreate() {
+        return isActive()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.status == 'pending'
+          && request.resource.data.currentEmail is string
+          && request.resource.data.requestedEmail is string
+          && request.resource.data.requestedEmail != request.resource.data.currentEmail
+          && request.resource.data.reason is string
+          && request.resource.data.reason.size() >= 5
+          && request.resource.data.requestedAt is timestamp
+          && !('reviewedBy' in request.resource.data)
+          && !('reviewedAt' in request.resource.data)
+          && !('rejectionReason' in request.resource.data)
+          && !('completedAt' in request.resource.data);
+      }
+
+      function validSuperadminReview() {
+        let changed = request.resource.data.diff(resource.data).affectedKeys();
+        return isSuperadmin()
+          && resource.data.status == 'pending'
+          && (
+            (request.resource.data.status == 'approved' && changed.hasOnly(['status', 'reviewedBy', 'reviewedAt']))
+            || (request.resource.data.status == 'rejected' && changed.hasOnly(['status', 'reviewedBy', 'reviewedAt', 'rejectionReason']) && request.resource.data.rejectionReason is string)
+          )
+          && request.resource.data.reviewedBy == request.auth.uid
+          && request.resource.data.reviewedAt is timestamp
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.currentEmail == resource.data.currentEmail
+          && request.resource.data.requestedEmail == resource.data.requestedEmail
+          && request.resource.data.reason == resource.data.reason
+          && request.resource.data.requestedAt == resource.data.requestedAt;
+      }
+
+      function validRequesterCompletion() {
+        let changed = request.resource.data.diff(resource.data).affectedKeys();
+        return isActive()
+          && request.auth.uid == resource.data.uid
+          && resource.data.status == 'approved'
+          && request.resource.data.status == 'completed'
+          && changed.hasOnly(['status', 'completedAt'])
+          && request.resource.data.completedAt is timestamp
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.currentEmail == resource.data.currentEmail
+          && request.resource.data.requestedEmail == resource.data.requestedEmail
+          && request.resource.data.reason == resource.data.reason
+          && request.resource.data.requestedAt == resource.data.requestedAt
+          && request.resource.data.reviewedBy == resource.data.reviewedBy
+          && request.resource.data.reviewedAt == resource.data.reviewedAt;
+      }
+
+      allow read: if isActive()
+        && (request.auth.uid == resource.data.uid || isSuperadmin());
+
+      allow create: if validEmailChangeRequestCreate();
+
+      allow update: if validSuperadminReview() || validRequesterCompletion();
+
+      allow delete: if false;
     }
 
     match /users/{userId}/fcmTokens/{tokenId} {
@@ -664,8 +794,15 @@ service cloud.firestore {
       allow read:
         if isActive();
 
-      allow create, update, delete:
-        if isSuperadmin();
+      allow create:
+        if isSuperadmin()
+        && validLaboratoryData(request.resource.data);
+
+      allow update:
+        if isSuperadmin()
+        && validLaboratoryUpdate(request.resource.data, resource.data);
+
+      allow delete: if isSuperadmin();
     }
 
 
@@ -1457,7 +1594,9 @@ service cloud.firestore {
         if isSuperadmin();
 
       allow create:
-        if isSuperadmin();
+        if isSuperadmin()
+        && (!('type' in request.resource.data)
+          || request.resource.data.type != 'credential');
 
       allow update, delete:
         if false;

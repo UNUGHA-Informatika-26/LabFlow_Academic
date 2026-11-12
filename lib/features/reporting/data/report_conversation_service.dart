@@ -7,14 +7,20 @@ import '../../../core/connectivity/connectivity_service.dart';
 import '../domain/report_message.dart';
 
 class ReportConversationService {
-  ReportConversationService({FirebaseFirestore? firestore, FirebaseAuth? auth})
-    : _firestore = firestore ?? FirebaseFirestore.instance,
-      _auth = auth ?? FirebaseAuth.instance;
+  ReportConversationService({
+    FirebaseFirestore? firestore,
+    FirebaseAuth? auth,
+    AssetImageService? images,
+    ConnectivityService? connectivity,
+  })  : _firestore = firestore ?? FirebaseFirestore.instance,
+        _auth = auth ?? FirebaseAuth.instance,
+        _images = images ?? AssetImageService(),
+        _connectivity = connectivity ?? PluginConnectivityService();
 
   final FirebaseFirestore _firestore;
   final FirebaseAuth _auth;
-  final AssetImageService _images = AssetImageService();
-  final ConnectivityService _connectivity = PluginConnectivityService();
+  final AssetImageService _images;
+  final ConnectivityService _connectivity;
 
   static String? validateMessage(String value, {bool hasImage = false}) {
     final text = value.trim();

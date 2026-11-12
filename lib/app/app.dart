@@ -57,6 +57,20 @@ class _LabFlowAppState extends State<LabFlowApp> with WidgetsBindingObserver {
         path.startsWith('/superadmin/');
   }
 
+  bool _matchesRolePrefix(String path, String role) => switch (role) {
+    'student' => path == '/student' || path.startsWith('/student/'),
+    'lab_admin' => path == '/lab-admin' || path.startsWith('/lab-admin/'),
+    'superadmin' => path == '/superadmin' || path.startsWith('/superadmin/'),
+    _ => false,
+  };
+
+  String _homePathForRole(String role) => switch (role) {
+    'student' => '/student',
+    'lab_admin' => '/lab-admin',
+    'superadmin' => '/superadmin',
+    _ => '/login',
+  };
+
   void _onRouteChanged() {
     _expiryTimer?.cancel();
     if (_isProtectedRoute) unawaited(_checkSession());
@@ -73,8 +87,15 @@ class _LabFlowAppState extends State<LabFlowApp> with WidgetsBindingObserver {
       final session = await _authService.requireValidSession();
       if (!mounted || !_isProtectedRoute) return;
       if (verifyProfile) {
-        await _authService.getCurrentUserProfile();
+        final profile = await _authService.getCurrentUserProfile(
+          forceRefresh: true,
+        );
         if (!mounted || !_isProtectedRoute) return;
+        final currentPath = _router.routeInformationProvider.value.uri.path;
+        if (!_matchesRolePrefix(currentPath, profile.role)) {
+          _router.go(_homePathForRole(profile.role));
+          return;
+        }
       }
       final remaining = session.expiresAt.difference(DateTime.now().toUtc());
       _expiryTimer?.cancel();

@@ -7,8 +7,10 @@
   },
   "scripts": {
     "lint": "node --check src/index.js && node --check src/notification_core.js",
-    "test": "node --test test/notification_core.test.js",
+    "test": "node --test test/notification_core.test.js test/email_provider.test.js",
     "test:emulator": "node --test test/emulator.test.js",
+    "test:credential-emulator": "node --test test/credential_emulator.test.js",
+    "seed:emulator": "node src/seed_emulator_accounts.mjs",
     "build": "node --check src/index.js && node --check src/notification_core.js"
   },
   "dependencies": {

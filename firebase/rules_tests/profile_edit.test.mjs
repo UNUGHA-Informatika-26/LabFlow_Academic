@@ -9,6 +9,7 @@ import {
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
 import { doc, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { FIRESTORE_HOST, FIRESTORE_PORT } from './emulator_config.mjs';
 
 const rules = readFileSync(resolve('../../firebase/firestore.rules'), 'utf8');
 let environment;
@@ -20,7 +21,7 @@ let outsider;
 before(async () => {
   environment = await initializeTestEnvironment({
     projectId: 'labflow-profile-rules-test',
-    firestore: { rules },
+    firestore: { rules, host: FIRESTORE_HOST, port: FIRESTORE_PORT },
   });
   await environment.clearFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {

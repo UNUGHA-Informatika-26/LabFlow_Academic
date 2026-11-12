@@ -6,21 +6,41 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
 class AssetImageService {
-  AssetImageService({ImagePicker? imagePicker, http.Client? httpClient})
-    : _imagePicker = imagePicker ?? ImagePicker(),
-      _httpClient = httpClient ?? _sharedClient;
+  AssetImageService({
+    ImagePicker? imagePicker,
+    http.Client? httpClient,
+    String? cloudName,
+    String? uploadPreset,
+  })  : _imagePicker = imagePicker ?? ImagePicker(),
+        _httpClient = httpClient ?? _sharedClient,
+        _configuredCloudName = cloudName,
+        _configuredUploadPreset = uploadPreset;
 
   static final http.Client _sharedClient = http.Client();
 
   final ImagePicker _imagePicker;
   final http.Client _httpClient;
+  final String? _configuredCloudName;
+  final String? _configuredUploadPreset;
 
   static const String _cloudName = String.fromEnvironment(
     'CLOUDINARY_CLOUD_NAME',
+    defaultValue: 'uaorce9b',
   );
   static const String _uploadPreset = String.fromEnvironment(
     'CLOUDINARY_UPLOAD_PRESET',
+    defaultValue: 'labflow_assets',
   );
+
+  String get effectiveCloudName =>
+      (_configuredCloudName?.trim().isNotEmpty ?? false)
+          ? _configuredCloudName!.trim()
+          : _cloudName.trim();
+
+  String get effectiveUploadPreset =>
+      (_configuredUploadPreset?.trim().isNotEmpty ?? false)
+          ? _configuredUploadPreset!.trim()
+          : _uploadPreset.trim();
 
   /// Memilih satu foto aset dari galeri perangkat.
   Future<XFile?> pickFromGallery() async {
@@ -80,11 +100,11 @@ class AssetImageService {
     }
 
     final uri = Uri.parse(
-      'https://api.cloudinary.com/v1_1/$_cloudName/image/upload',
+      'https://api.cloudinary.com/v1_1/$effectiveCloudName/image/upload',
     );
 
     final request = http.MultipartRequest('POST', uri);
-    request.fields['upload_preset'] = _uploadPreset;
+    request.fields['upload_preset'] = effectiveUploadPreset;
     request.fields['folder'] = folder;
     request.files.add(
       await http.MultipartFile.fromPath(
@@ -159,11 +179,7 @@ class AssetImageService {
   }
 
   void _validateConfiguration() {
-    if (_cloudName.trim().isEmpty) {
-      throw const AssetImageException('Konfigurasi upload belum tersedia.');
-    }
-
-    if (_uploadPreset.trim().isEmpty) {
+    if (effectiveCloudName.isEmpty || effectiveUploadPreset.isEmpty) {
       throw const AssetImageException('Konfigurasi upload belum tersedia.');
     }
   }

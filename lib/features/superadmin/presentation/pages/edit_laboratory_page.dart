@@ -2,10 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../../core/connectivity/connectivity_cubit.dart';
+import '../../../../core/offline/admin_entity_draft_store.dart';
+import '../../../../core/offline/conflict_resolution.dart';
 import '../../../../shared/presentation/dialogs/labflow_confirmation_dialog.dart';
+import '../../../../shared/presentation/dialogs/labflow_conflict_resolution_dialog.dart';
 import '../../../../shared/presentation/notifications/labflow_notification.dart';
 import '../../../../shared/presentation/states/labflow_connection_error_state.dart';
 import '../../../../shared/presentation/states/labflow_loading_state.dart';
+import '../../../auth/data/auth_service.dart';
 import '../../../laboratory/data/laboratory_service.dart';
 import '../../../laboratory/domain/laboratory.dart';
 import '../../data/activity_log_service.dart';
@@ -49,10 +54,24 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
   final TextEditingController _codeController = TextEditingController();
   final TextEditingController _locationController = TextEditingController();
   final TextEditingController _descriptionController = TextEditingController();
+  final AdminEntityDraftStore _draftStore =
+      SharedPreferencesAdminEntityDraftStore();
+  final AuthService _authService = AuthService();
+
   bool _initialised = false;
   bool get _isSaving => context.read<LaboratoryManagementActionCubit>().state;
   bool get _isDeleting => _isSaving;
   String _status = 'active';
+  OfflineEntityDraft? _loadedDraft;
+  bool _draftChecked = false;
+
+  static const Map<String, String> _fieldLabels = <String, String>{
+    'name': 'Nama Laboratorium',
+    'code': 'Kode Laboratorium',
+    'location': 'Lokasi',
+    'description': 'Deskripsi',
+    'status': 'Status',
+  };
 
   /// Snapshot kondisi awal.
   ///
@@ -61,6 +80,140 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
   String _originalName = '';
   String _originalCode = '';
   Laboratory? _originalLaboratory;
+  bool get _isDirty {
+    final original = _originalLaboratory;
+    if (original == null) return false;
+    return original.name.trim() != _nameController.text.trim() ||
+        original.code.trim().toUpperCase() !=
+            _codeController.text.trim().toUpperCase() ||
+        original.location.trim() != _locationController.text.trim() ||
+        original.description.trim() != _descriptionController.text.trim() ||
+        original.status != _status;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLocalDraft();
+  }
+
+  Future<void> _loadLocalDraft() async {
+    final uid = _authService.currentUid;
+    if (uid == null) {
+      if (mounted) setState(() => _draftChecked = true);
+      return;
+    }
+    final draft = await _draftStore.readDraftForEntity(
+      uid: uid,
+      entityType: DraftEntityType.laboratory,
+      entityId: widget.laboratoryId,
+    );
+    if (!mounted) return;
+    setState(() {
+      _loadedDraft = draft;
+      _draftChecked = true;
+      if (draft != null) {
+        _applyDraftToForm(draft);
+      }
+    });
+  }
+
+  void _applyDraftToForm(OfflineEntityDraft draft) {
+    _nameController.text = (draft.data['name'] as String? ?? '');
+    _codeController.text = (draft.data['code'] as String? ?? '');
+    _locationController.text = (draft.data['location'] as String? ?? '');
+    _descriptionController.text = (draft.data['description'] as String? ?? '');
+    final draftStatus = (draft.data['status'] as String? ?? 'active');
+    if (draftStatus == 'active' || draftStatus == 'inactive') {
+      _status = draftStatus;
+    }
+    if (_originalLaboratory == null && draft.baselineData != null) {
+      final base = draft.baselineData!;
+      _originalName = (base['name'] as String? ?? '');
+      _originalCode = (base['code'] as String? ?? '');
+      _originalLaboratory = Laboratory(
+        id: widget.laboratoryId,
+        name: _originalName,
+        code: _originalCode,
+        description: (base['description'] as String? ?? ''),
+        location: (base['location'] as String? ?? ''),
+        status: (base['status'] as String? ?? 'active'),
+        updatedAt: draft.baselineUpdatedAt,
+      );
+      _initialised = true;
+    }
+  }
+
+  Future<void> _saveDraftLocally({
+    DraftSyncStatus syncStatus = DraftSyncStatus.pending,
+    String? lastError,
+    Map<String, FieldConflict> conflicts = const <String, FieldConflict>{},
+  }) async {
+    FocusScope.of(context).unfocus();
+    final uid = _authService.currentUid;
+    final original = _originalLaboratory;
+    if (uid == null || original == null) return;
+    final now = DateTime.now().toUtc();
+    final draftId = OfflineEntityDraft.createDraftIdFor(
+      entityType: DraftEntityType.laboratory,
+      entityId: widget.laboratoryId,
+    );
+    final draft = OfflineEntityDraft(
+      draftId: draftId,
+      ownerUid: uid,
+      entityType: DraftEntityType.laboratory,
+      entityId: widget.laboratoryId,
+      data: <String, Object?>{
+        'name': _nameController.text.trim(),
+        'code': _codeController.text.trim().toUpperCase(),
+        'location': _locationController.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'status': _status,
+      },
+      baselineData: _loadedDraft?.baselineData ?? original.toBaselineMap(),
+      baselineUpdatedAt: _loadedDraft?.baselineUpdatedAt ?? original.updatedAt,
+      createdAt: _loadedDraft?.createdAt ?? now,
+      updatedAt: now,
+      syncStatus: syncStatus,
+      lastError: lastError,
+      conflicts: conflicts,
+    );
+    await _draftStore.saveDraft(uid, draft);
+    if (!mounted) return;
+    setState(() => _loadedDraft = draft);
+    if (syncStatus == DraftSyncStatus.pending) {
+      _showMessage(
+        'Perubahan laboratorium disimpan sebagai draft lokal.',
+        type: LabFlowNotificationType.info,
+        title: 'Draft lokal disimpan',
+      );
+    }
+  }
+
+  Future<void> _deleteLocalDraft() async {
+    final uid = _authService.currentUid;
+    final draft = _loadedDraft;
+    if (uid == null || draft == null) return;
+    await _draftStore.removeDraft(uid, draft.draftId);
+    if (!mounted) return;
+    setState(() {
+      _loadedDraft = null;
+      final original = _originalLaboratory;
+      if (original != null) {
+        _nameController.text = original.name;
+        _codeController.text = original.code;
+        _locationController.text = original.location;
+        _descriptionController.text = original.description;
+        _status = original.status;
+      }
+    });
+    _showMessage(
+      'Draft lokal dihapus dan form dikembalikan ke kondisi awal.',
+      type: LabFlowNotificationType.info,
+      title: 'Draft dihapus',
+    );
+  }
+
   @override
   void dispose() {
     _nameController.dispose();
@@ -76,32 +229,48 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
     if (_initialised) {
       return;
     }
-    _nameController.text = laboratory.name;
-    _codeController.text = laboratory.code;
-    _locationController.text = laboratory.location;
-    _descriptionController.text = laboratory.description;
-    _status = laboratory.status;
     _originalName = laboratory.name;
     _originalCode = laboratory.code;
     _originalLaboratory = laboratory;
+    if (_loadedDraft != null) {
+      _applyDraftToForm(_loadedDraft!);
+    } else {
+      _nameController.text = laboratory.name;
+      _codeController.text = laboratory.code;
+      _locationController.text = laboratory.location;
+      _descriptionController.text = laboratory.description;
+      _status = laboratory.status;
+    }
     _initialised = true;
   }
 
   /// Memperbarui data laboratorium.
   ///
   /// Activity Log dibuat setelah update Firestore berhasil.
-  Future<void> _update() async {
+  Future<void> _update({
+    Map<String, ConflictResolutionDecision>? conflictDecisions,
+  }) async {
     FocusScope.of(context).unfocus();
     final valid = _formKey.currentState?.validate() ?? false;
     if (!valid || _isSaving || _isDeleting) {
       return;
     }
+
+    final isOffline =
+        context.read<ConnectivityCubit?>()?.state.isOffline ?? false;
+    if (isOffline) {
+      await _saveDraftLocally();
+      return;
+    }
+
     try {
       final newName = _nameController.text.trim();
       final newCode = _codeController.text.trim().toUpperCase();
       final newLocation = _locationController.text.trim();
       final newDescription = _descriptionController.text.trim();
       final newStatus = _status;
+      final baseline =
+          _loadedDraft?.baselineData ?? _originalLaboratory?.toBaselineMap();
 
       await context.read<LaboratoryManagementActionCubit>().updateLaboratory(
         laboratoryId: widget.laboratoryId,
@@ -111,7 +280,14 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
         location: newLocation,
         status: newStatus,
         original: _originalLaboratory!,
+        baselineData: baseline,
+        conflictDecisions: conflictDecisions,
       );
+
+      final uid = _authService.currentUid;
+      if (uid != null && _loadedDraft != null) {
+        await _draftStore.removeDraft(uid, _loadedDraft!.draftId);
+      }
 
       /// Memperbarui snapshot lokal setelah
       /// operasi berhasil.
@@ -125,6 +301,31 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
       /// Laboratory Management setelah menerima
       /// result "updated".
       context.pop('updated');
+    } on ConflictDetectedException catch (conflictError) {
+      if (!mounted) return;
+      await _saveDraftLocally(
+        syncStatus: DraftSyncStatus.conflict,
+        lastError: conflictError.message,
+        conflicts: conflictError.analysis.conflicts,
+      );
+      if (!mounted) return;
+      final decisions = await showLabFlowConflictResolutionDialog(
+        context: context,
+        analysis: conflictError.analysis,
+        fieldLabels: _fieldLabels,
+      );
+      if (decisions != null && mounted) {
+        final resolved = conflictError.analysis.resolveWithDecisions(decisions);
+        setState(() {
+          _nameController.text = (resolved['name'] as String? ?? '');
+          _codeController.text = (resolved['code'] as String? ?? '');
+          _locationController.text = (resolved['location'] as String? ?? '');
+          _descriptionController.text =
+              (resolved['description'] as String? ?? '');
+          _status = (resolved['status'] as String? ?? _status);
+        });
+        await _update(conflictDecisions: decisions);
+      }
     } on LaboratoryException catch (error) {
       if (!mounted) {
         return;
@@ -142,10 +343,16 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
       if (!mounted) {
         return;
       }
+      await _saveDraftLocally(
+        syncStatus: DraftSyncStatus.failed,
+        lastError:
+            'Koneksi terputus saat menyimpan. Draft disimpan secara lokal.',
+      );
+      if (!mounted) return;
       _showMessage(
-        'Gagal memperbarui laboratorium.',
+        'Gagal memperbarui laboratorium. Perubahan telah disimpan sebagai draft lokal.',
         type: LabFlowNotificationType.error,
-        title: 'Terjadi kesalahan',
+        title: 'Tersimpan sebagai draft',
       );
     }
   }
@@ -253,8 +460,29 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
     if (value == null || value.trim().isEmpty) {
       return 'Field ini wajib diisi.';
     }
-    return null;
+    final original = _originalLaboratory;
+    if (original != null && value.trim() == original.name.trim()) {
+      return null;
+    }
+    return LaboratoryService.validateName(value);
   }
+
+  String? _codeValidator(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Kode laboratorium wajib diisi.';
+    }
+    final original = _originalLaboratory;
+    if (original != null &&
+        value.trim().toUpperCase() == original.code.trim().toUpperCase()) {
+      return null;
+    }
+    return LaboratoryService.validateCode(value);
+  }
+
+  String? _locationValidator(String? value) =>
+      value == null || value.trim().isEmpty
+      ? 'Lokasi laboratorium wajib diisi.'
+      : null;
 
   @override
   Widget build(BuildContext context) {
@@ -276,13 +504,16 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
       ),
       body: BlocBuilder<LaboratoryDetailCubit, LaboratoryDetailState>(
         builder: (context, state) {
-          if (state is LaboratoryDetailLoading) {
+          if (state is LaboratoryDetailLoading || !_draftChecked) {
             return const LabFlowLoadingState(
               title: 'Memuat laboratorium',
               message: 'Mengambil data laboratorium yang dipilih.',
             );
           }
           if (state is LaboratoryDetailFailure) {
+            if (_loadedDraft != null && _originalLaboratory != null) {
+              return _buildForm();
+            }
             return const LabFlowConnectionErrorState(
               title: 'Laboratorium tidak dapat dimuat',
               message:
@@ -324,6 +555,55 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
                   color: Color(0xFF6B7280),
                 ),
               ),
+              if (_loadedDraft != null) ...[
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFDDE2D5)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.edit_note_rounded,
+                        color: Color(0xFF111111),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Draft lokal aktif untuk laboratorium ini',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            LabFlowDraftStatusBadge(
+                              status: _loadedDraft!.syncStatus,
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Hapus draft lokal',
+                        onPressed: _isSaving || _isDeleting
+                            ? null
+                            : _deleteLocalDraft,
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          color: Color(0xFFBD3232),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
               const SizedBox(height: 24),
 
               /// =================================================
@@ -331,6 +611,7 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
               /// =================================================
               TextFormField(
                 controller: _nameController,
+                onChanged: (_) => setState(() {}),
                 validator: _required,
                 enabled: !_isSaving && !_isDeleting,
                 textInputAction: TextInputAction.next,
@@ -346,7 +627,8 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
               /// =================================================
               TextFormField(
                 controller: _codeController,
-                validator: _required,
+                onChanged: (_) => setState(() {}),
+                validator: _codeValidator,
                 enabled: !_isSaving && !_isDeleting,
                 textCapitalization: TextCapitalization.characters,
                 textInputAction: TextInputAction.next,
@@ -363,7 +645,8 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
               /// =================================================
               TextFormField(
                 controller: _locationController,
-                validator: _required,
+                onChanged: (_) => setState(() {}),
+                validator: _locationValidator,
                 enabled: !_isSaving && !_isDeleting,
                 textInputAction: TextInputAction.next,
                 decoration: _inputDecoration(
@@ -378,6 +661,7 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
               /// =================================================
               TextFormField(
                 controller: _descriptionController,
+                onChanged: (_) => setState(() {}),
                 maxLines: 4,
                 enabled: !_isSaving && !_isDeleting,
                 textInputAction: TextInputAction.newline,
@@ -428,7 +712,9 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
                 width: double.infinity,
                 height: 52,
                 child: FilledButton(
-                  onPressed: _isSaving || _isDeleting ? null : _update,
+                  onPressed: _isSaving || _isDeleting || !_isDirty
+                      ? null
+                      : () => _update(),
                   style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF111111),
                     foregroundColor: Colors.white,
@@ -455,6 +741,36 @@ class _EditLaboratoryPageState extends State<_EditLaboratoryView> {
                             ),
                           ],
                         ),
+                ),
+              ),
+              if (!_isDirty)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Center(
+                    child: Text(
+                      'Belum ada perubahan untuk disimpan.',
+                      style: TextStyle(color: Color(0xFF6B7280)),
+                    ),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: _isSaving || _isDeleting || !_isDirty
+                      ? null
+                      : () => _saveDraftLocally(),
+                  icon: const Icon(Icons.save_as_outlined, size: 18),
+                  label: const Text(
+                    'Simpan Draft Lokal',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF111111),
+                    side: const BorderSide(color: Color(0xFFD8DDD0)),
+                    shape: const StadiumBorder(),
+                  ),
                 ),
               ),
               const SizedBox(height: 12),

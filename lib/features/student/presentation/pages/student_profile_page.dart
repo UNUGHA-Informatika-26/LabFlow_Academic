@@ -153,6 +153,11 @@ class _StudentProfileView extends StatelessWidget {
             },
           ),
           ProfileMenuTile(
+            icon: Icons.security_outlined,
+            title: 'Keamanan Akun',
+            onTap: () => context.push('/student/profile/security'),
+          ),
+          ProfileMenuTile(
             icon: Icons.menu_book_outlined,
             title: 'Panduan Aplikasi',
             onTap: () => context.push('/student/profile/guide'),

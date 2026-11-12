@@ -3,6 +3,11 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:go_router/go_router.dart';
 
+import '../../../../core/connectivity/connectivity_cubit.dart';
+import '../../../../core/connectivity/connectivity_state.dart';
+import '../../../../core/offline/admin_entity_draft_store.dart';
+import '../../../../core/offline/conflict_resolution.dart';
+import '../../../../shared/presentation/dialogs/labflow_conflict_resolution_dialog.dart';
 import '../../../../shared/presentation/notifications/labflow_notification.dart';
 
 import '../../../../shared/presentation/states/labflow_connection_error_state.dart';
@@ -10,11 +15,14 @@ import '../../../../shared/presentation/states/labflow_connection_error_state.da
 import '../../../../shared/presentation/states/labflow_loading_state.dart';
 import '../../../../shared/presentation/states/labflow_no_search_results_state.dart';
 
+import '../../../auth/data/auth_service.dart';
 import '../../../laboratory/data/laboratory_service.dart';
 
 import '../../../laboratory/domain/laboratory.dart';
 
+import '../../data/activity_log_service.dart';
 import '../cubit/laboratory_directory_cubit.dart';
+import '../cubit/laboratory_management_action_cubit.dart';
 
 import '../widgets/superadmin_bottom_navigation.dart';
 
@@ -40,11 +48,201 @@ class _LaboratoryManagementView extends StatefulWidget {
 
 class _LaboratoryManagementPageState extends State<_LaboratoryManagementView> {
   final TextEditingController _searchController = TextEditingController();
+  final AdminEntityDraftStore _draftStore =
+      SharedPreferencesAdminEntityDraftStore();
+  final AuthService _authService = AuthService();
+  late final LaboratoryManagementActionCubit _actionCubit =
+      LaboratoryManagementActionCubit(
+        LaboratoryService(),
+        ActivityLogService(),
+      );
 
   _LaboratoryFilter _selectedFilter = _LaboratoryFilter.all;
+  List<OfflineEntityDraft> _drafts = const <OfflineEntityDraft>[];
+
+  static const Map<String, String> _fieldLabels = <String, String>{
+    'name': 'Nama Laboratorium',
+    'code': 'Kode Laboratorium',
+    'location': 'Lokasi',
+    'description': 'Deskripsi',
+    'status': 'Status',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDrafts();
+  }
+
+  Future<void> _loadDrafts() async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+    final drafts = await _draftStore.listDrafts(
+      uid,
+      entityType: DraftEntityType.laboratory,
+    );
+    if (!mounted) return;
+    setState(() => _drafts = drafts);
+  }
+
+  Future<void> _deleteDraft(OfflineEntityDraft draft) async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+    await _draftStore.removeDraft(uid, draft.draftId);
+    await _loadDrafts();
+    if (!mounted) return;
+    _showSuccessMessage(
+      title: 'Draft dihapus',
+      message: 'Draft lokal laboratorium telah dihapus.',
+    );
+  }
+
+  Future<void> _resumeDraftEdit(OfflineEntityDraft draft) async {
+    if (draft.isCreateDraft) {
+      final created = await context.push<bool>('/superadmin/labs/create');
+      await _loadDrafts();
+      if (!mounted) return;
+      if (created == true) {
+        _showSuccessMessage(
+          title: 'Laboratorium dibuat',
+          message: 'Laboratorium baru berhasil ditambahkan ke sistem.',
+        );
+      }
+      return;
+    }
+    final entityId = draft.entityId!;
+    final result = await context.push<String>(
+      '/superadmin/labs/$entityId/edit',
+    );
+    await _loadDrafts();
+    if (!mounted) return;
+    if (result == 'updated') {
+      _showSuccessMessage(
+        title: 'Laboratorium diperbarui',
+        message: 'Data laboratorium berhasil diperbarui.',
+      );
+    }
+  }
+
+  Future<void> _syncDraft(
+    OfflineEntityDraft draft, {
+    Map<String, ConflictResolutionDecision>? conflictDecisions,
+  }) async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+
+    final syncingDraft = draft.copyWith(
+      syncStatus: DraftSyncStatus.syncing,
+      clearError: true,
+    );
+    await _draftStore.saveDraft(uid, syncingDraft);
+    await _loadDrafts();
+
+    try {
+      final profile = await _authService.getCurrentUserProfile(
+        forceRefresh: true,
+      );
+      if (profile.role != 'superadmin') {
+        throw const LaboratoryException(
+          'Hanya Superadmin aktif yang dapat menyinkronkan draft laboratorium.',
+        );
+      }
+
+      final name = (draft.data['name'] as String? ?? '').trim();
+      final code = (draft.data['code'] as String? ?? '').trim().toUpperCase();
+      final location = (draft.data['location'] as String? ?? '').trim();
+      final description = (draft.data['description'] as String? ?? '').trim();
+      final status = (draft.data['status'] as String? ?? 'active').trim();
+
+      if (draft.isCreateDraft) {
+        await _actionCubit.createLaboratory(
+          name: name,
+          code: code,
+          description: description,
+          location: location,
+          status: status,
+        );
+      } else {
+        final base = draft.baselineData ?? const <String, Object?>{};
+        final original = Laboratory(
+          id: draft.entityId!,
+          name: (base['name'] as String? ?? name),
+          code: (base['code'] as String? ?? code),
+          description: (base['description'] as String? ?? description),
+          location: (base['location'] as String? ?? location),
+          status: (base['status'] as String? ?? status),
+          updatedAt: draft.baselineUpdatedAt,
+        );
+        await _actionCubit.updateLaboratory(
+          laboratoryId: draft.entityId!,
+          name: name,
+          code: code,
+          description: description,
+          location: location,
+          status: status,
+          original: original,
+          baselineData: draft.baselineData,
+          conflictDecisions: conflictDecisions,
+        );
+      }
+
+      await _draftStore.removeDraft(uid, draft.draftId);
+      await _loadDrafts();
+      if (!mounted) return;
+      _showSuccessMessage(
+        title: 'Sinkronisasi berhasil',
+        message: 'Draft laboratorium $code berhasil disinkronkan ke server.',
+      );
+    } on ConflictDetectedException catch (conflictError) {
+      final conflictDraft = draft.copyWith(
+        syncStatus: DraftSyncStatus.conflict,
+        lastError: conflictError.message,
+        conflicts: conflictError.analysis.conflicts,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      await _draftStore.saveDraft(uid, conflictDraft);
+      await _loadDrafts();
+      if (!mounted) return;
+      final decisions = await showLabFlowConflictResolutionDialog(
+        context: context,
+        analysis: conflictError.analysis,
+        fieldLabels: _fieldLabels,
+      );
+      if (decisions != null && mounted) {
+        final resolved = conflictError.analysis.resolveWithDecisions(decisions);
+        final updatedDraft = conflictDraft.copyWith(
+          data: resolved,
+          updatedAt: DateTime.now().toUtc(),
+        );
+        await _draftStore.saveDraft(uid, updatedDraft);
+        await _syncDraft(updatedDraft, conflictDecisions: decisions);
+      }
+    } on Object catch (error) {
+      final message = switch (error) {
+        final LaboratoryException e => e.message,
+        final AuthServiceException e => e.message,
+        _ => 'Sinkronisasi gagal. Periksa koneksi Anda lalu coba lagi.',
+      };
+      final failedDraft = draft.copyWith(
+        syncStatus: DraftSyncStatus.failed,
+        lastError: message,
+        updatedAt: DateTime.now().toUtc(),
+      );
+      await _draftStore.saveDraft(uid, failedDraft);
+      await _loadDrafts();
+      if (!mounted) return;
+      showLabFlowNotification(
+        context: context,
+        title: 'Sinkronisasi belum berhasil',
+        message: message,
+        type: LabFlowNotificationType.warning,
+      );
+    }
+  }
 
   @override
   void dispose() {
+    _actionCubit.close();
     _searchController.dispose();
 
     super.dispose();
@@ -124,6 +322,47 @@ class _LaboratoryManagementPageState extends State<_LaboratoryManagementView> {
                         padding: const EdgeInsets.fromLTRB(20, 0, 20, 32),
 
                         children: [
+                          if (_drafts.isNotEmpty) ...[
+                            Builder(
+                              builder: (context) {
+                                final connectivity = context
+                                    .watch<ConnectivityCubit?>();
+                                final isOnline =
+                                    connectivity == null ||
+                                    connectivity.state.status !=
+                                        ConnectivityStatus.offline;
+                                return LabFlowOfflineDraftsPanel(
+                                  drafts: _drafts,
+                                  isOnline: isOnline,
+                                  titleBuilder: (draft) {
+                                    final name =
+                                        (draft.data['name'] as String? ?? '')
+                                            .trim();
+                                    final code =
+                                        (draft.data['code'] as String? ?? '')
+                                            .trim();
+                                    final label = name.isNotEmpty
+                                        ? name
+                                        : 'Laboratorium Tanpa Nama';
+                                    return draft.isCreateDraft
+                                        ? '[Buat Baru] $label'
+                                        : '[Edit] ${code.isNotEmpty ? "$code · " : ""}$label';
+                                  },
+                                  subtitleBuilder: (draft) {
+                                    final loc =
+                                        (draft.data['location'] as String? ??
+                                                '-')
+                                            .trim();
+                                    return 'Lokasi: ${loc.isEmpty ? "-" : loc}';
+                                  },
+                                  onResumeEdit: _resumeDraftEdit,
+                                  onSyncDraft: _syncDraft,
+                                  onDeleteDraft: _deleteDraft,
+                                );
+                              },
+                            ),
+                            const SizedBox(height: 16),
+                          ],
                           for (
                             int index = 0;
 
@@ -282,6 +521,7 @@ class _LaboratoryManagementPageState extends State<_LaboratoryManagementView> {
         final result = await context.push<String>(
           '/superadmin/labs/${laboratory.id}/edit',
         );
+        await _loadDrafts();
 
         if (!mounted) {
           return;
@@ -628,6 +868,7 @@ class _LaboratoryManagementPageState extends State<_LaboratoryManagementView> {
 
   Future<void> _createLaboratory() async {
     final created = await context.push<bool>('/superadmin/labs/create');
+    await _loadDrafts();
 
     if (!mounted) {
       return;

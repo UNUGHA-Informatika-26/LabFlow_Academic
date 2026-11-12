@@ -36,6 +36,24 @@ class ProfileEditState {
   final XFile? photo;
   final bool removePhoto;
   final String errorMessage;
+
+  bool get hasChanges {
+    final p = profile;
+    if (p == null) return false;
+    String norm(String? value) => value?.trim() ?? '';
+    final currentPhotoUrl = norm(p.profilePhotoUrl);
+    final photoChanged =
+        photo != null || (removePhoto && currentPhotoUrl.isNotEmpty);
+    return norm(p.fullName) != norm(fullName) ||
+        norm(p.phoneNumber) != norm(phoneNumber) ||
+        (p.isStudent &&
+            (norm(p.nim) != norm(nim) ||
+                norm(p.studyProgram) != norm(studyProgram) ||
+                p.semester != semester)) ||
+        (p.isLabAdmin &&
+            (norm(p.nip) != norm(nip) || norm(p.nidn) != norm(nidn))) ||
+        photoChanged;
+  }
 }
 
 class ProfileEditCubit extends Cubit<ProfileEditState> {
@@ -187,6 +205,9 @@ class ProfileEditCubit extends Cubit<ProfileEditState> {
           errorMessage: error,
         ),
       );
+      return;
+    }
+    if (!current.hasChanges) {
       return;
     }
 

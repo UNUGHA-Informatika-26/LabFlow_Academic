@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../../shared/presentation/notifications/labflow_notification.dart';
 import '../../../../shared/presentation/states/labflow_connection_error_state.dart';
 import '../../../../shared/presentation/states/labflow_loading_state.dart';
+import '../../../../core/validators/auth_validator.dart';
 import '../../../auth/domain/user_profile.dart';
 import '../../data/user_management_service.dart';
 import '../../data/activity_log_service.dart';
@@ -12,24 +13,42 @@ import '../cubit/user_management_action_cubit.dart';
 import '../cubit/user_detail_cubit.dart';
 
 class EditUserPage extends StatelessWidget {
-  const EditUserPage({required this.userId, super.key});
+  const EditUserPage({
+    required this.userId,
+    this.actionCubit,
+    this.detailCubit,
+    super.key,
+  });
   final String userId;
+  final UserManagementActionCubit? actionCubit;
+  final UserDetailCubit? detailCubit;
 
   @override
-  Widget build(BuildContext context) => MultiBlocProvider(
-    providers: [
-      BlocProvider(
-        create: (_) => UserManagementActionCubit(
-          UserManagementService(),
-          ActivityLogService(),
+  Widget build(BuildContext context) {
+    if (actionCubit != null && detailCubit != null) {
+      return MultiBlocProvider(
+        providers: [
+          BlocProvider.value(value: actionCubit!),
+          BlocProvider.value(value: detailCubit!),
+        ],
+        child: _EditUserView(userId: userId),
+      );
+    }
+    return MultiBlocProvider(
+      providers: [
+        BlocProvider(
+          create: (_) => UserManagementActionCubit(
+            UserManagementService(),
+            ActivityLogService(),
+          ),
         ),
-      ),
-      BlocProvider(
-        create: (_) => UserDetailCubit(UserManagementService())..load(userId),
-      ),
-    ],
-    child: _EditUserView(userId: userId),
-  );
+        BlocProvider(
+          create: (_) => UserDetailCubit(UserManagementService())..load(userId),
+        ),
+      ],
+      child: _EditUserView(userId: userId),
+    );
+  }
 }
 
 class _EditUserView extends StatefulWidget {
@@ -44,6 +63,7 @@ class _EditUserView extends StatefulWidget {
 class _EditUserPageState extends State<_EditUserView> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final TextEditingController _nameController = TextEditingController();
+  final TextEditingController _emailController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _nimController = TextEditingController();
   final TextEditingController _programController = TextEditingController();
@@ -63,9 +83,33 @@ class _EditUserPageState extends State<_EditUserView> {
   String _originalFullName = '';
   String _originalRole = 'student';
   String _originalEmail = '';
+  UserProfile? _originalProfile;
+
+  bool get _isDirty {
+    final original = _originalProfile;
+    if (original == null) return false;
+    String norm(String? value) => value?.trim() ?? '';
+    final desiredNim = _role == 'student' ? norm(_nimController.text) : '';
+    final desiredProgram =
+        _role == 'student' ? norm(_programController.text) : '';
+    final desiredSemester =
+        _role == 'student' ? int.tryParse(_semesterController.text.trim()) : null;
+    final desiredNip = _role == 'lab_admin' ? norm(_nipController.text) : '';
+    final desiredNidn = _role == 'lab_admin' ? norm(_nidnController.text) : '';
+    return norm(original.fullName) != norm(_nameController.text) ||
+        original.role != _role ||
+        original.status != _status ||
+        norm(original.phoneNumber) != norm(_phoneController.text) ||
+        norm(original.nim) != desiredNim ||
+        norm(original.studyProgram) != desiredProgram ||
+        original.semester != desiredSemester ||
+        norm(original.nip) != desiredNip ||
+        norm(original.nidn) != desiredNidn;
+  }
   @override
   void dispose() {
     _nameController.dispose();
+    _emailController.dispose();
     _phoneController.dispose();
     _nimController.dispose();
     _programController.dispose();
@@ -82,6 +126,7 @@ class _EditUserPageState extends State<_EditUserView> {
   void _fillForm(UserProfile profile) {
     if (_initialised) return;
     _nameController.text = profile.fullName;
+    _emailController.text = profile.email;
     _phoneController.text = profile.phoneNumber ?? '';
     _nimController.text = profile.nim ?? '';
     _programController.text = profile.studyProgram ?? '';
@@ -93,6 +138,7 @@ class _EditUserPageState extends State<_EditUserView> {
     _originalFullName = profile.fullName;
     _originalRole = profile.role;
     _originalEmail = profile.email;
+    _originalProfile = profile;
     _initialised = true;
   }
 
@@ -103,7 +149,7 @@ class _EditUserPageState extends State<_EditUserView> {
   Future<void> _save() async {
     FocusScope.of(context).unfocus();
     final valid = _formKey.currentState?.validate() ?? false;
-    if (!valid || _isSaving || _isChangingStatus) {
+    if (!valid || _isSaving || _isChangingStatus || !_isDirty) {
       return;
     }
     try {
@@ -127,6 +173,7 @@ class _EditUserPageState extends State<_EditUserView> {
         semester: int.tryParse(_semesterController.text),
         nip: _nipController.text,
         nidn: _nidnController.text,
+        originalProfile: _originalProfile,
       );
 
       /// Memperbarui snapshot lokal.
@@ -237,7 +284,27 @@ class _EditUserPageState extends State<_EditUserView> {
     }
   }
 
-  /// Menampilkan feedback error atau informasi.
+    void _showPasswordResetHelp() {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Prosedur Reset Password'),
+        content: Text(
+          'Pada Firebase Spark Plan, reset password diproses langsung oleh pengelola ' 
+          'melalui Firebase Authentication Console -> Tab Users -> Kirim Email Reset Password ' 
+          'ke alamat terdaftar ().\n\n' 
+          'Langkah ini menjamin keamanan kredensial tanpa membocorkan password baru kepada siapapun.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Mengerti'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _showMessage(
     String message, {
     LabFlowNotificationType type = LabFlowNotificationType.error,
@@ -343,6 +410,7 @@ class _EditUserPageState extends State<_EditUserView> {
               /// =================================================
               TextFormField(
                 controller: _nameController,
+                onChanged: (_) => setState(() {}),
                 enabled: !isSuperadmin,
                 validator: _validateName,
                 textInputAction: TextInputAction.next,
@@ -354,6 +422,7 @@ class _EditUserPageState extends State<_EditUserView> {
               const SizedBox(height: 12),
               TextFormField(
                 controller: _phoneController,
+                onChanged: (_) => setState(() {}),
                 maxLength: 20,
                 keyboardType: TextInputType.phone,
                 decoration: _inputDecoration('Nomor HP', Icons.phone_outlined),
@@ -361,11 +430,13 @@ class _EditUserPageState extends State<_EditUserView> {
               if (_role == 'student') ...[
                 TextFormField(
                   controller: _nimController,
+                  onChanged: (_) => setState(() {}),
                   maxLength: 30,
                   decoration: _inputDecoration('NIM', Icons.badge_outlined),
                 ),
                 TextFormField(
                   controller: _programController,
+                  onChanged: (_) => setState(() {}),
                   maxLength: 100,
                   decoration: _inputDecoration(
                     'Program Studi',
@@ -374,6 +445,7 @@ class _EditUserPageState extends State<_EditUserView> {
                 ),
                 TextFormField(
                   controller: _semesterController,
+                  onChanged: (_) => setState(() {}),
                   keyboardType: TextInputType.number,
                   validator: (value) {
                     final raw = value?.trim() ?? '';
@@ -392,11 +464,13 @@ class _EditUserPageState extends State<_EditUserView> {
               if (_role == 'lab_admin') ...[
                 TextFormField(
                   controller: _nipController,
+                  onChanged: (_) => setState(() {}),
                   maxLength: 30,
                   decoration: _inputDecoration('NIP', Icons.badge_outlined),
                 ),
                 TextFormField(
                   controller: _nidnController,
+                  onChanged: (_) => setState(() {}),
                   maxLength: 30,
                   decoration: _inputDecoration('NIDN', Icons.school_outlined),
                 ),
@@ -406,13 +480,50 @@ class _EditUserPageState extends State<_EditUserView> {
               /// =================================================
               /// EMAIL
               /// =================================================
-              /// Email berasal dari Firebase Authentication
-              /// dan tidak diubah melalui form ini.
               TextFormField(
-                initialValue: profile.email,
+                controller: _emailController,
                 readOnly: true,
-                enabled: false,
-                decoration: _inputDecoration('Email', Icons.email_outlined),
+                keyboardType: TextInputType.emailAddress,
+                validator: AuthValidator.validateEmail,
+                decoration: _inputDecoration('Email (Dikelola via Permohonan User)', Icons.email_outlined),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Perubahan email diajukan langsung oleh pemilik akun melalui menu Keamanan Akun dan disetujui Superadmin pada menu Permohonan Ubah Email.',
+                style: TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+              ),
+              if (profile.hasPendingEmailChange) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF3C7),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFF59E0B)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline, color: Color(0xFFB45309), size: 18),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Perubahan email tertunda: ${profile.pendingEmail} (Menunggu verifikasi link)',
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF92400E),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: _showPasswordResetHelp,
+                icon: const Icon(Icons.lock_reset_rounded),
+                label: const Text('Petunjuk Reset Password'),
               ),
               const SizedBox(height: 16),
 
@@ -531,10 +642,13 @@ class _EditUserPageState extends State<_EditUserView> {
                   width: double.infinity,
                   height: 52,
                   child: FilledButton(
-                    onPressed: _isSaving || _isChangingStatus ? null : _save,
+                    onPressed: _isSaving || _isChangingStatus || !_isDirty
+                        ? null
+                        : _save,
                     style: FilledButton.styleFrom(
                       backgroundColor: const Color(0xFF111111),
                       foregroundColor: Colors.white,
+                      disabledBackgroundColor: const Color(0xFF444444),
                       shape: const StadiumBorder(),
                     ),
                     child: _isSaving
@@ -559,6 +673,16 @@ class _EditUserPageState extends State<_EditUserView> {
                           ),
                   ),
                 ),
+                if (!_isDirty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Center(
+                      child: Text(
+                        'Belum ada perubahan untuk disimpan.',
+                        style: TextStyle(color: Color(0xFF6B7280)),
+                      ),
+                    ),
+                  ),
                 const SizedBox(height: 12),
 
                 /// ===============================================

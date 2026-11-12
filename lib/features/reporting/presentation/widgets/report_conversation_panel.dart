@@ -90,18 +90,48 @@ class _ConversationViewState extends State<_ConversationView> {
                 padding: const EdgeInsets.only(bottom: 10),
                 child: Row(
                   children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.file(
-                        File(_selectedImage!.path),
-                        width: 76,
-                        height: 76,
-                        cacheWidth: 152,
-                        fit: BoxFit.cover,
-                      ),
+                    Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: Image.file(
+                            File(_selectedImage!.path),
+                            width: 76,
+                            height: 76,
+                            cacheWidth: 152,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        if (state.sending)
+                          Container(
+                            width: 76,
+                            height: 76,
+                            decoration: BoxDecoration(
+                              color: Colors.black45,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Center(
+                              child: SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                     const SizedBox(width: 10),
-                    const Expanded(child: Text('Gambar siap dikirim')),
+                    Expanded(
+                      child: Text(
+                        state.sending
+                            ? 'Mengunggah gambar...'
+                            : 'Gambar siap dikirim',
+                      ),
+                    ),
                     IconButton(
                       tooltip: 'Hapus gambar',
                       onPressed: state.sending

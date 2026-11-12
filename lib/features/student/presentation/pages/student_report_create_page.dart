@@ -8,13 +8,25 @@ import '../student_navigation.dart';
 import '../widgets/student_ui.dart';
 
 class StudentReportCreatePage extends StatelessWidget {
-  const StudentReportCreatePage({super.key});
+  const StudentReportCreatePage({this.cubit, this.service, super.key});
+
+  final StudentReportCreateCubit? cubit;
+  final StudentReportService? service;
 
   @override
-  Widget build(BuildContext context) => BlocProvider(
-    create: (_) => StudentReportCreateCubit(StudentReportService())..load(),
-    child: const _StudentReportCreateView(),
-  );
+  Widget build(BuildContext context) {
+    if (cubit != null) {
+      return BlocProvider.value(
+        value: cubit!,
+        child: const _StudentReportCreateView(),
+      );
+    }
+    return BlocProvider(
+      create: (_) =>
+          StudentReportCreateCubit(service ?? StudentReportService())..load(),
+      child: const _StudentReportCreateView(),
+    );
+  }
 }
 
 class _StudentReportCreateView extends StatelessWidget {
@@ -43,6 +55,7 @@ class _StudentReportCreateView extends StatelessWidget {
       },
       child: Scaffold(
         backgroundColor: studentPaper,
+        resizeToAvoidBottomInset: true,
         body: SafeArea(
           child:
               BlocBuilder<StudentReportCreateCubit, StudentReportCreateState>(
@@ -71,6 +84,7 @@ class _StudentReportCreateView extends StatelessWidget {
   Widget _form(BuildContext context, StudentReportCreateState state) {
     final cubit = context.read<StudentReportCreateCubit>();
     return ListView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.fromLTRB(18, 14, 18, 28),
       children: [
         StudentBackHeader(
@@ -79,13 +93,14 @@ class _StudentReportCreateView extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: state.category,
           decoration: _decoration('Kategori'),
           items: categories.entries
               .map(
                 (entry) => DropdownMenuItem(
                   value: entry.key,
-                  child: Text(entry.value),
+                  child: Text(entry.value, overflow: TextOverflow.ellipsis),
                 ),
               )
               .toList(),
@@ -95,6 +110,7 @@ class _StudentReportCreateView extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: state.labId.isEmpty ? null : state.labId,
           decoration: _decoration('Laboratorium'),
           items: state.laboratories
@@ -113,12 +129,13 @@ class _StudentReportCreateView extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: state.assetId,
           decoration: _decoration('Aset (opsional)'),
           items: [
             const DropdownMenuItem<String>(
               value: null,
-              child: Text('Tidak terkait aset'),
+              child: Text('Tidak terkait aset', overflow: TextOverflow.ellipsis),
             ),
             ...state.assets.map(
               (asset) => DropdownMenuItem(
@@ -160,11 +177,18 @@ class _StudentReportCreateView extends StatelessWidget {
         ),
         const SizedBox(height: 10),
         DropdownButtonFormField<String>(
+          isExpanded: true,
           initialValue: state.severity,
           decoration: _decoration('Urgensi'),
           items: const [
-            DropdownMenuItem(value: 'normal', child: Text('Normal')),
-            DropdownMenuItem(value: 'urgent', child: Text('Mendesak')),
+            DropdownMenuItem(
+              value: 'normal',
+              child: Text('Normal', overflow: TextOverflow.ellipsis),
+            ),
+            DropdownMenuItem(
+              value: 'urgent',
+              child: Text('Mendesak', overflow: TextOverflow.ellipsis),
+            ),
           ],
           onChanged: (value) {
             if (value != null) cubit.setSeverity(value);
@@ -229,6 +253,8 @@ class _StudentReportCreateView extends StatelessWidget {
                 : const Icon(Icons.arrow_forward_rounded),
             label: const Text(
               'Kirim Laporan',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
               style: TextStyle(fontWeight: FontWeight.w900),
             ),
           ),
@@ -240,6 +266,8 @@ class _StudentReportCreateView extends StatelessWidget {
   InputDecoration _decoration(String label) {
     return InputDecoration(
       labelText: label,
+      isDense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       filled: true,
       fillColor: Colors.white,
       border: OutlineInputBorder(

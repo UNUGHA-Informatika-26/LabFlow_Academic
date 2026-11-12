@@ -1,0 +1,6 @@
+node_modules/
+.tmp/
+reports/**/*.xml
+reports/logs/
+reports/screenshots/
+reports/logcat_summary.txt

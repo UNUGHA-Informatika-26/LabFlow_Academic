@@ -114,6 +114,11 @@ class _LabAdminProfileView extends StatelessWidget {
             },
           ),
           ProfileMenuTile(
+            icon: Icons.security_outlined,
+            title: 'Keamanan Akun',
+            onTap: () => context.push('/lab-admin/profile/security'),
+          ),
+          ProfileMenuTile(
             icon: Icons.menu_book_outlined,
             title: 'Panduan Aplikasi',
             onTap: () => context.push('/lab-admin/profile/guide'),

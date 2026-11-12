@@ -4,13 +4,14 @@ import { resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { doc, setDoc, writeBatch, Timestamp } from 'firebase/firestore';
+import { FIRESTORE_HOST, FIRESTORE_PORT } from './emulator_config.mjs';
 
 const rules = readFileSync(resolve('../../firebase/firestore.rules'), 'utf8');
 let env;
 let studentDb;
 
 before(async () => {
-  env = await initializeTestEnvironment({ projectId: 'demo-labflow-identity-rules', firestore: { rules } });
+  env = await initializeTestEnvironment({ projectId: 'demo-labflow-identity-rules', firestore: { rules, host: FIRESTORE_HOST, port: FIRESTORE_PORT } });
   await env.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'users', 'student-1'), { role: 'student', status: 'active', fullName: 'Nama Asli' });

@@ -65,8 +65,17 @@ class StudentService {
 
     final data = snapshot.data() ?? const <String, dynamic>{};
     final role = (data['role'] as String? ?? '').trim();
+    final status = (data['status'] as String? ?? 'active').trim();
+
+    if (status != 'active') {
+      await signOut();
+      throw const StudentServiceException(
+        'Akun Anda sedang dinonaktifkan. Hubungi Admin Lab.',
+      );
+    }
 
     if (role != 'student') {
+      AuthService.clearProfileCache(uid);
       throw const StudentServiceException('Akun ini bukan akun Student.');
     }
 

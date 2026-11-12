@@ -4,17 +4,25 @@ import 'package:firebase_core/firebase_core.dart';
 
 import '../../../firebase_options.dart';
 import '../../auth/domain/user_profile.dart';
+import 'admin_credential_service.dart';
 
 /// Service khusus Superadmin untuk mengelola pengguna LabFlow.
 class UserManagementService {
   UserManagementService({
     FirebaseFirestore? firestore,
     FirebaseAuth? firebaseAuth,
+    AdminCredentialService? credentialService,
   }) : _firestore = firestore ?? FirebaseFirestore.instance,
-       _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance;
+       _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
+       _credentialService =
+           credentialService ??
+           AdminCredentialService(
+             firebaseAuth: firebaseAuth ?? FirebaseAuth.instance,
+           );
 
   final FirebaseFirestore _firestore;
   final FirebaseAuth _firebaseAuth;
+  final AdminCredentialService _credentialService;
 
   /// Mengambil seluruh pengguna secara realtime.
   Stream<List<UserProfile>> watchUsers() {
@@ -188,7 +196,8 @@ class UserManagementService {
   ///
   /// Email sengaja tidak ikut diperbarui karena email juga
   /// tersimpan pada Firebase Authentication.
-  Future<void> updateUser({
+  /// Mengembalikan `true` jika ada field yang benar-benar berubah dan disimpan.
+  Future<bool> updateUser({
     required String userId,
     required String fullName,
     required String role,
@@ -230,6 +239,33 @@ class UserManagementService {
       );
     }
 
+    Object? normalized(Object? value) =>
+        value is String ? (value.trim().isEmpty ? null : value.trim()) : value;
+    final desired = <String, Object?>{
+      'fullName': cleanName,
+      'role': role,
+      'status': status,
+      'phoneNumber': phoneNumber.trim().isEmpty ? null : phoneNumber.trim(),
+      'nim': role == 'student' && nim.trim().isNotEmpty ? nim.trim() : null,
+      'studyProgram': role == 'student' && studyProgram.trim().isNotEmpty
+          ? studyProgram.trim()
+          : null,
+      'semester': role == 'student' ? semester : null,
+      'nip': role == 'lab_admin' && nip.trim().isNotEmpty ? nip.trim() : null,
+      'nidn': role == 'lab_admin' && nidn.trim().isNotEmpty
+          ? nidn.trim()
+          : null,
+    };
+    final update = <String, Object?>{};
+    for (final entry in desired.entries) {
+      if (entry.key == 'semester'
+          ? data[entry.key] != entry.value
+          : normalized(data[entry.key]) != normalized(entry.value)) {
+        update[entry.key] = entry.value;
+      }
+    }
+    if (update.isEmpty) return false;
+
     /// Jika Lab Admin hendak diubah menjadi Student,
     /// jangan biarkan masih mempunyai membership aktif.
     if (data['role'] == 'lab_admin' && role != 'lab_admin') {
@@ -248,22 +284,9 @@ class UserManagementService {
       }
     }
 
-    await userReference.update({
-      'fullName': cleanName,
-      'role': role,
-      'status': status,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'phoneNumber': phoneNumber.trim().isEmpty ? null : phoneNumber.trim(),
-      'nim': role == 'student' && nim.trim().isNotEmpty ? nim.trim() : null,
-      'studyProgram': role == 'student' && studyProgram.trim().isNotEmpty
-          ? studyProgram.trim()
-          : null,
-      'semester': role == 'student' ? semester : null,
-      'nip': role == 'lab_admin' && nip.trim().isNotEmpty ? nip.trim() : null,
-      'nidn': role == 'lab_admin' && nidn.trim().isNotEmpty
-          ? nidn.trim()
-          : null,
-    });
+    update['updatedAt'] = FieldValue.serverTimestamp();
+    await userReference.update(update);
+    return true;
   }
 
   void _validateIdentity({
@@ -299,7 +322,7 @@ class UserManagementService {
   ///
   /// Karena client Firebase tidak boleh menghapus akun Auth user lain,
   /// akun dinonaktifkan melalui status Firestore.
-  Future<void> suspendUser(String userId) async {
+  Future<bool> suspendUser(String userId) async {
     final currentUser = _firebaseAuth.currentUser;
 
     if (currentUser == null) {
@@ -328,14 +351,19 @@ class UserManagementService {
       );
     }
 
+    if (data['status'] == 'suspended') {
+      return false;
+    }
+
     await reference.update({
       'status': 'suspended',
       'updatedAt': FieldValue.serverTimestamp(),
     });
+    return true;
   }
 
   /// Mengaktifkan kembali akun suspended.
-  Future<void> activateUser(String userId) async {
+  Future<bool> activateUser(String userId) async {
     final reference = _firestore.collection('users').doc(userId);
 
     final document = await reference.get();
@@ -344,10 +372,39 @@ class UserManagementService {
       throw const UserManagementException('Pengguna tidak ditemukan.');
     }
 
+    if (document.data()?['status'] == 'active') {
+      return false;
+    }
+
     await reference.update({
       'status': 'active',
       'updatedAt': FieldValue.serverTimestamp(),
     });
+    return true;
+  }
+
+  /// Meminta backend tepercaya mengirim tautan verifikasi perubahan email.
+  Future<void> requestEmailChange({
+    required String userId,
+    required String newEmail,
+  }) async {
+    try {
+      await _credentialService.requestEmailChange(
+        targetUid: userId,
+        newEmail: newEmail,
+      );
+    } on AdminCredentialException catch (error) {
+      throw UserManagementException(error.message);
+    }
+  }
+
+  /// Meminta backend tepercaya mengirim tautan reset ke email akun target.
+  Future<void> sendPasswordReset(String userId) async {
+    try {
+      await _credentialService.sendPasswordReset(targetUid: userId);
+    } on AdminCredentialException catch (error) {
+      throw UserManagementException(error.message);
+    }
   }
 
   void _validateProfile({

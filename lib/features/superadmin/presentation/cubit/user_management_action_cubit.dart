@@ -60,31 +60,57 @@ class UserManagementActionCubit extends Cubit<bool> {
     int? semester,
     String nip = '',
     String nidn = '',
-  }) => _run(() async {
-    await _users.updateUser(
-      userId: userId,
-      fullName: fullName,
-      role: role,
-      status: status,
-      phoneNumber: phoneNumber,
-      nim: nim,
-      studyProgram: studyProgram,
-      semester: semester,
-      nip: nip,
-      nidn: nidn,
-    );
-    if (originalFullName.trim() != fullName.trim()) {
-      await _activityLog.logUserUpdated(fullName: fullName, email: email);
+    UserProfile? originalProfile,
+  }) {
+    if (originalProfile != null) {
+      String norm(String? value) => value?.trim() ?? '';
+      final desiredNim = role == 'student' ? norm(nim) : '';
+      final desiredProgram = role == 'student' ? norm(studyProgram) : '';
+      final desiredSemester = role == 'student' ? semester : null;
+      final desiredNip = role == 'lab_admin' ? norm(nip) : '';
+      final desiredNidn = role == 'lab_admin' ? norm(nidn) : '';
+      if (norm(originalProfile.fullName) == fullName.trim() &&
+          originalProfile.role == role &&
+          originalProfile.status == status &&
+          norm(originalProfile.phoneNumber) == norm(phoneNumber) &&
+          norm(originalProfile.nim) == desiredNim &&
+          norm(originalProfile.studyProgram) == desiredProgram &&
+          originalProfile.semester == desiredSemester &&
+          norm(originalProfile.nip) == desiredNip &&
+          norm(originalProfile.nidn) == desiredNidn) {
+        return Future<void>.value();
+      }
     }
-    if (originalRole != role) {
-      await _activityLog.logUserRoleChanged(
+    return _run(() async {
+      final changed = await _users.updateUser(
+        userId: userId,
         fullName: fullName,
-        email: email,
-        oldRole: originalRole,
-        newRole: role,
+        role: role,
+        status: status,
+        phoneNumber: phoneNumber,
+        nim: nim,
+        studyProgram: studyProgram,
+        semester: semester,
+        nip: nip,
+        nidn: nidn,
       );
-    }
-  });
+      if (!changed) return;
+      final roleChanged = originalRole != role;
+      final generalChanged =
+          originalFullName.trim() != fullName.trim() || !roleChanged;
+      if (generalChanged) {
+        await _activityLog.logUserUpdated(fullName: fullName, email: email);
+      }
+      if (roleChanged) {
+        await _activityLog.logUserRoleChanged(
+          fullName: fullName,
+          email: email,
+          oldRole: originalRole,
+          newRole: role,
+        );
+      }
+    });
+  }
 
   Future<void> setUserStatus({
     required String userId,
@@ -93,13 +119,26 @@ class UserManagementActionCubit extends Cubit<bool> {
     required bool suspend,
   }) => _run(() async {
     if (suspend) {
-      await _users.suspendUser(userId);
-      await _activityLog.logUserSuspended(fullName: fullName, email: email);
+      final changed = await _users.suspendUser(userId);
+      if (changed) {
+        await _activityLog.logUserSuspended(fullName: fullName, email: email);
+      }
     } else {
-      await _users.activateUser(userId);
-      await _activityLog.logUserActivated(fullName: fullName, email: email);
+      final changed = await _users.activateUser(userId);
+      if (changed) {
+        await _activityLog.logUserActivated(fullName: fullName, email: email);
+      }
     }
   });
+
+  Future<void> requestEmailChange({
+    required String userId,
+    required String newEmail,
+  }) =>
+      _run(() => _users.requestEmailChange(userId: userId, newEmail: newEmail));
+
+  Future<void> sendPasswordReset({required String userId}) =>
+      _run(() => _users.sendPasswordReset(userId));
 
   Future<void> _run(Future<void> Function() operation) async {
     if (state) return;

@@ -155,6 +155,11 @@ class _SuperadminProfilePageState extends State<_SuperadminProfileView> {
             },
           ),
           ProfileMenuTile(
+            icon: Icons.security_outlined,
+            title: 'Keamanan Akun',
+            onTap: () => context.push('/superadmin/profile/security'),
+          ),
+          ProfileMenuTile(
             icon: Icons.menu_book_outlined,
             title: 'Panduan Aplikasi',
             onTap: () => context.push('/superadmin/profile/guide'),

@@ -4,6 +4,10 @@ import 'package:go_router/go_router.dart';
 import '../../shared/presentation/navigation/labflow_back_fallback.dart';
 
 import '../../features/auth/presentation/pages/login_page.dart';
+import '../../features/auth/presentation/pages/account_security_page.dart';
+import '../../features/auth/presentation/pages/request_email_change_page.dart';
+import '../../features/auth/presentation/pages/superadmin_email_requests_page.dart';
+import '../../features/auth/presentation/pages/forgot_password_page.dart';
 import '../../features/auth/presentation/widgets/labflow_account_status_gate.dart';
 import '../../features/borrowing/presentation/pages/admin_borrow_request_detail_page.dart';
 import '../../features/borrowing/presentation/pages/admin_borrow_requests_page.dart';
@@ -67,6 +71,10 @@ GoRouter createAppRouter({required String initialLocation}) {
         builder: (context, state) => const OnboardingPage(),
       ),
       GoRoute(path: '/login', builder: (context, state) => const LoginPage()),
+      GoRoute(
+        path: '/forgot-password',
+        builder: (context, state) => const ForgotPasswordPage(),
+      ),
 
       /// Dashboard placeholder lama.
       GoRoute(
@@ -201,6 +209,34 @@ GoRouter createAppRouter({required String initialLocation}) {
             role: 'superadmin',
             returnPath: '/superadmin/profile',
           ),
+        ),
+      ),
+      GoRoute(
+        path: '/superadmin/profile/security',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'superadmin',
+          child: AccountSecurityPage(returnPath: '/superadmin/profile'),
+        ),
+      ),
+      GoRoute(
+        path: '/superadmin/email-requests',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'superadmin',
+          child: SuperadminEmailRequestsPage(),
+        ),
+      ),
+      GoRoute(
+        path: '/superadmin/profile/security/change-email',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'superadmin',
+          child: RequestEmailChangePage(),
+        ),
+      ),
+      GoRoute(
+        path: '/superadmin/profile/security/change-password',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'superadmin',
+          child: ChangePasswordPage(),
         ),
       ),
       GoRoute(
@@ -361,6 +397,27 @@ GoRouter createAppRouter({required String initialLocation}) {
         ),
       ),
       GoRoute(
+        path: '/student/profile/security',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'student',
+          child: AccountSecurityPage(returnPath: '/student/profile'),
+        ),
+      ),
+      GoRoute(
+        path: '/student/profile/security/change-email',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'student',
+          child: RequestEmailChangePage(),
+        ),
+      ),
+      GoRoute(
+        path: '/student/profile/security/change-password',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'student',
+          child: ChangePasswordPage(),
+        ),
+      ),
+      GoRoute(
         path: '/student/profile/about',
         builder: (context, state) => const LabFlowAccountStatusGate(
           requiredRole: 'student',
@@ -429,6 +486,27 @@ GoRouter createAppRouter({required String initialLocation}) {
             role: 'lab_admin',
             returnPath: '/lab-admin/profile',
           ),
+        ),
+      ),
+      GoRoute(
+        path: '/lab-admin/profile/security',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'lab_admin',
+          child: AccountSecurityPage(returnPath: '/lab-admin/profile'),
+        ),
+      ),
+      GoRoute(
+        path: '/lab-admin/profile/security/change-email',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'lab_admin',
+          child: RequestEmailChangePage(),
+        ),
+      ),
+      GoRoute(
+        path: '/lab-admin/profile/security/change-password',
+        builder: (context, state) => const LabFlowAccountStatusGate(
+          requiredRole: 'lab_admin',
+          child: ChangePasswordPage(),
         ),
       ),
       GoRoute(

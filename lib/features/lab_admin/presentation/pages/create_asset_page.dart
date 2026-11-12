@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
+import '../../../../core/connectivity/connectivity_cubit.dart';
+import '../../../../core/offline/admin_entity_draft_store.dart';
+import '../../../../shared/presentation/dialogs/labflow_conflict_resolution_dialog.dart';
 import '../../../../shared/presentation/navigation/labflow_back_fallback.dart';
 
 import 'package:go_router/go_router.dart';
@@ -13,6 +17,7 @@ import '../../../../shared/presentation/states/labflow_loading_state.dart';
 
 import '../../../asset/data/asset_image_service.dart';
 import '../../../asset/data/asset_service.dart';
+import '../../../auth/data/auth_service.dart';
 
 import '../../../laboratory/data/lab_membership_service.dart';
 
@@ -21,7 +26,9 @@ import '../../../laboratory/domain/lab_membership.dart';
 import '../../../laboratory/domain/laboratory.dart';
 
 class CreateAssetPage extends StatefulWidget {
-  const CreateAssetPage({super.key});
+  const CreateAssetPage({this.draftId, super.key});
+
+  final String? draftId;
 
   @override
   State<CreateAssetPage> createState() => _CreateAssetPageState();
@@ -48,6 +55,9 @@ class _CreateAssetPageState extends State<CreateAssetPage> {
 
   final AssetService _assetService = AssetService();
   final AssetImageService _assetImageService = AssetImageService();
+  final AdminEntityDraftStore _draftStore =
+      SharedPreferencesAdminEntityDraftStore();
+  final AuthService _authService = AuthService();
 
   XFile? _selectedImage;
 
@@ -56,6 +66,108 @@ class _CreateAssetPageState extends State<CreateAssetPage> {
   String? _selectedLabId;
 
   bool _isLoading = false;
+  OfflineEntityDraft? _loadedDraft;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDraftIfPresent();
+  }
+
+  Future<void> _loadDraftIfPresent() async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+    final targetId =
+        widget.draftId ??
+        OfflineEntityDraft.createDraftIdFor(entityType: DraftEntityType.asset);
+    final draft = await _draftStore.readDraft(uid, targetId);
+    if (draft == null || !mounted) return;
+    setState(() {
+      _loadedDraft = draft;
+      _nameController.text = (draft.data['name'] as String? ?? '');
+      _codeController.text = (draft.data['code'] as String? ?? '');
+      _categoryController.text = (draft.data['category'] as String? ?? '');
+      _stockController.text = '${draft.data['stock'] ?? 1}';
+      _locationController.text = (draft.data['location'] as String? ?? '');
+      _descriptionController.text =
+          (draft.data['description'] as String? ?? '');
+      final savedCond = (draft.data['condition'] as String? ?? 'good');
+      if (savedCond == 'good' ||
+          savedCond == 'minor_damage' ||
+          savedCond == 'damaged') {
+        _condition = savedCond;
+      }
+      final savedLabId = (draft.data['laboratoryId'] as String?)?.trim();
+      if (savedLabId != null && savedLabId.isNotEmpty) {
+        _selectedLabId = savedLabId;
+      }
+    });
+  }
+
+  Future<void> _saveDraftLocally(
+    String laboratoryId, {
+    String? lastError,
+  }) async {
+    FocusScope.of(context).unfocus();
+    final uid = _authService.currentUid;
+    if (uid == null) {
+      _showMessage(
+        'Sesi login tidak ditemukan. Silakan masuk kembali.',
+        title: 'Tidak dapat menyimpan draft',
+      );
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    final draftId =
+        _loadedDraft?.draftId ??
+        widget.draftId ??
+        OfflineEntityDraft.createDraftIdFor(entityType: DraftEntityType.asset);
+    final stock = int.tryParse(_stockController.text.trim()) ?? 1;
+    final draft = OfflineEntityDraft(
+      draftId: draftId,
+      ownerUid: uid,
+      entityType: DraftEntityType.asset,
+      data: <String, Object?>{
+        'laboratoryId': laboratoryId.trim(),
+        'name': _nameController.text.trim(),
+        'code': _codeController.text.trim().toUpperCase(),
+        'category': _categoryController.text.trim(),
+        'stock': stock < 1 ? 1 : stock,
+        'location': _locationController.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'condition': _condition,
+        'imageUrl': (_loadedDraft?.data['imageUrl'] as String? ?? ''),
+      },
+      createdAt: _loadedDraft?.createdAt ?? now,
+      updatedAt: now,
+      syncStatus: lastError == null
+          ? DraftSyncStatus.pending
+          : DraftSyncStatus.failed,
+      lastError: lastError,
+    );
+    await _draftStore.saveDraft(uid, draft);
+    if (!mounted) return;
+    setState(() => _loadedDraft = draft);
+    _showMessage(
+      'Draft aset tersimpan secara lokal. Anda dapat menyinkronkannya secara manual saat online.',
+      title: 'Draft lokal disimpan',
+      type: LabFlowNotificationType.info,
+    );
+  }
+
+  Future<void> _deleteLocalDraft() async {
+    final uid = _authService.currentUid;
+    final draft = _loadedDraft;
+    if (uid == null || draft == null) return;
+    await _draftStore.removeDraft(uid, draft.draftId);
+    if (!mounted) return;
+    setState(() => _loadedDraft = null);
+    _showMessage(
+      'Draft lokal aset berhasil dihapus.',
+      title: 'Draft dihapus',
+      type: LabFlowNotificationType.info,
+    );
+  }
 
   @override
   void dispose() {
@@ -80,6 +192,13 @@ class _CreateAssetPageState extends State<CreateAssetPage> {
     final isValid = _formKey.currentState?.validate() ?? false;
 
     if (!isValid || _isLoading) {
+      return;
+    }
+
+    final isOffline =
+        context.read<ConnectivityCubit?>()?.state.isOffline ?? false;
+    if (isOffline) {
+      await _saveDraftLocally(laboratoryId);
       return;
     }
 
@@ -120,6 +239,11 @@ class _CreateAssetPageState extends State<CreateAssetPage> {
         imageUrl: imageUrl,
       );
 
+      final uid = _authService.currentUid;
+      if (uid != null && _loadedDraft != null) {
+        await _draftStore.removeDraft(uid, _loadedDraft!.draftId);
+      }
+
       if (!mounted) {
         return;
       }
@@ -152,13 +276,10 @@ class _CreateAssetPageState extends State<CreateAssetPage> {
         return;
       }
 
-      _showMessage(
-        'Terjadi kesalahan saat membuat aset. '
-        'Periksa koneksi Anda lalu coba lagi.',
-
-        title: 'Pembuatan gagal',
-
-        type: LabFlowNotificationType.error,
+      await _saveDraftLocally(
+        laboratoryId,
+        lastError:
+            'Koneksi terputus saat menyimpan. Draft disimpan secara lokal.',
       );
     } finally {
       if (mounted) {
@@ -392,6 +513,54 @@ class _CreateAssetPageState extends State<CreateAssetPage> {
                 laboratories: laboratories,
                 selectedLaboratory: selectedLaboratory,
               ),
+
+              if (_loadedDraft != null) ...[
+                const SizedBox(height: 16),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFDDE2D5)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.edit_note_rounded,
+                        color: Color(0xFF111111),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Draft lokal aset dimuat',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            LabFlowDraftStatusBadge(
+                              status: _loadedDraft!.syncStatus,
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Hapus draft lokal',
+                        onPressed: _isLoading ? null : _deleteLocalDraft,
+                        icon: const Icon(
+                          Icons.delete_outline_rounded,
+                          color: Color(0xFFBD3232),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
 
               const SizedBox(height: 16),
 
@@ -636,6 +805,28 @@ class _CreateAssetPageState extends State<CreateAssetPage> {
                             ),
                           ],
                         ),
+                ),
+              ),
+
+              const SizedBox(height: 12),
+
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: OutlinedButton.icon(
+                  onPressed: _isLoading
+                      ? null
+                      : () => _saveDraftLocally(selectedLabId),
+                  icon: const Icon(Icons.save_as_outlined, size: 18),
+                  label: const Text(
+                    'Simpan Draft Lokal',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: const Color(0xFF111111),
+                    side: const BorderSide(color: Color(0xFFD8DDD0)),
+                    shape: const StadiumBorder(),
+                  ),
                 ),
               ),
             ],

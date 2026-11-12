@@ -2,13 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../../core/connectivity/connectivity_cubit.dart';
+import '../../../../core/offline/admin_entity_draft_store.dart';
+import '../../../../shared/presentation/dialogs/labflow_conflict_resolution_dialog.dart';
 import '../../../../shared/presentation/notifications/labflow_notification.dart';
+import '../../../auth/data/auth_service.dart';
 import '../../../laboratory/data/laboratory_service.dart';
 import '../../data/activity_log_service.dart';
 import '../cubit/laboratory_management_action_cubit.dart';
 
 class CreateLaboratoryPage extends StatelessWidget {
-  const CreateLaboratoryPage({super.key});
+  const CreateLaboratoryPage({this.draftId, super.key});
+
+  final String? draftId;
 
   @override
   Widget build(BuildContext context) => BlocProvider(
@@ -16,12 +22,14 @@ class CreateLaboratoryPage extends StatelessWidget {
       LaboratoryService(),
       ActivityLogService(),
     ),
-    child: const _CreateLaboratoryView(),
+    child: _CreateLaboratoryView(draftId: draftId),
   );
 }
 
 class _CreateLaboratoryView extends StatefulWidget {
-  const _CreateLaboratoryView();
+  const _CreateLaboratoryView({this.draftId});
+
+  final String? draftId;
 
   @override
   State<_CreateLaboratoryView> createState() => _CreateLaboratoryPageState();
@@ -38,9 +46,103 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
 
   final TextEditingController _locationController = TextEditingController();
 
+  final AdminEntityDraftStore _draftStore =
+      SharedPreferencesAdminEntityDraftStore();
+  final AuthService _authService = AuthService();
+
   String _status = 'active';
+  OfflineEntityDraft? _loadedDraft;
 
   bool get _isLoading => context.read<LaboratoryManagementActionCubit>().state;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDraftIfPresent();
+  }
+
+  Future<void> _loadDraftIfPresent() async {
+    final uid = _authService.currentUid;
+    if (uid == null) return;
+    final targetId =
+        widget.draftId ??
+        OfflineEntityDraft.createDraftIdFor(
+          entityType: DraftEntityType.laboratory,
+        );
+    final draft = await _draftStore.readDraft(uid, targetId);
+    if (draft == null || !mounted) return;
+    setState(() {
+      _loadedDraft = draft;
+      _nameController.text = (draft.data['name'] as String? ?? '');
+      _codeController.text = (draft.data['code'] as String? ?? '');
+      _locationController.text = (draft.data['location'] as String? ?? '');
+      _descriptionController.text =
+          (draft.data['description'] as String? ?? '');
+      final savedStatus = (draft.data['status'] as String? ?? 'active');
+      if (savedStatus == 'active' || savedStatus == 'inactive') {
+        _status = savedStatus;
+      }
+    });
+  }
+
+  Future<void> _saveDraftLocally({String? lastError}) async {
+    FocusScope.of(context).unfocus();
+    final uid = _authService.currentUid;
+    if (uid == null) {
+      _showMessage(
+        'Sesi login tidak ditemukan. Silakan masuk kembali.',
+        title: 'Tidak dapat menyimpan draft',
+      );
+      return;
+    }
+    final now = DateTime.now().toUtc();
+    final draftId =
+        _loadedDraft?.draftId ??
+        widget.draftId ??
+        OfflineEntityDraft.createDraftIdFor(
+          entityType: DraftEntityType.laboratory,
+        );
+    final draft = OfflineEntityDraft(
+      draftId: draftId,
+      ownerUid: uid,
+      entityType: DraftEntityType.laboratory,
+      data: <String, Object?>{
+        'name': _nameController.text.trim(),
+        'code': _codeController.text.trim().toUpperCase(),
+        'location': _locationController.text.trim(),
+        'description': _descriptionController.text.trim(),
+        'status': _status,
+      },
+      createdAt: _loadedDraft?.createdAt ?? now,
+      updatedAt: now,
+      syncStatus: lastError == null
+          ? DraftSyncStatus.pending
+          : DraftSyncStatus.failed,
+      lastError: lastError,
+    );
+    await _draftStore.saveDraft(uid, draft);
+    if (!mounted) return;
+    setState(() => _loadedDraft = draft);
+    _showMessage(
+      'Draft laboratorium tersimpan secara lokal. Anda dapat menyinkronkannya secara manual saat online.',
+      type: LabFlowNotificationType.info,
+      title: 'Draft lokal disimpan',
+    );
+  }
+
+  Future<void> _deleteLocalDraft() async {
+    final uid = _authService.currentUid;
+    final draft = _loadedDraft;
+    if (uid == null || draft == null) return;
+    await _draftStore.removeDraft(uid, draft.draftId);
+    if (!mounted) return;
+    setState(() => _loadedDraft = null);
+    _showMessage(
+      'Draft lokal laboratorium berhasil dihapus.',
+      type: LabFlowNotificationType.info,
+      title: 'Draft dihapus',
+    );
+  }
 
   @override
   void dispose() {
@@ -65,6 +167,13 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
       return;
     }
 
+    final isOffline =
+        context.read<ConnectivityCubit?>()?.state.isOffline ?? false;
+    if (isOffline) {
+      await _saveDraftLocally();
+      return;
+    }
+
     try {
       final name = _nameController.text.trim();
 
@@ -85,6 +194,11 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
         location: location,
         status: _status,
       );
+
+      final uid = _authService.currentUid;
+      if (uid != null && _loadedDraft != null) {
+        await _draftStore.removeDraft(uid, _loadedDraft!.draftId);
+      }
 
       if (!mounted) {
         return;
@@ -110,10 +224,9 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
         return;
       }
 
-      _showMessage(
-        'Terjadi kesalahan saat membuat laboratorium.',
-        type: LabFlowNotificationType.error,
-        title: 'Pembuatan gagal',
+      await _saveDraftLocally(
+        lastError:
+            'Koneksi terputus saat menyimpan. Draft disimpan secara lokal.',
       );
     }
   }
@@ -133,12 +246,19 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
   }
 
   String? _requiredValidator(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return 'Field ini wajib diisi.';
-    }
-
-    return null;
+    return value == null
+        ? 'Field ini wajib diisi.'
+        : LaboratoryService.validateName(value);
   }
+
+  String? _codeValidator(String? value) => value == null
+      ? 'Kode laboratorium wajib diisi.'
+      : LaboratoryService.validateCode(value);
+
+  String? _locationValidator(String? value) =>
+      value == null || value.trim().isEmpty
+      ? 'Lokasi laboratorium wajib diisi.'
+      : null;
 
   @override
   Widget build(BuildContext context) {
@@ -188,6 +308,54 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
                   ),
                 ),
 
+                if (_loadedDraft != null) ...[
+                  const SizedBox(height: 16),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFDDE2D5)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.edit_note_rounded,
+                          color: Color(0xFF111111),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Draft lokal dimuat',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              LabFlowDraftStatusBadge(
+                                status: _loadedDraft!.syncStatus,
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          tooltip: 'Hapus draft lokal',
+                          onPressed: _isLoading ? null : _deleteLocalDraft,
+                          icon: const Icon(
+                            Icons.delete_outline_rounded,
+                            color: Color(0xFFBD3232),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
                 const SizedBox(height: 24),
 
                 /// =================================================
@@ -212,7 +380,7 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
                 /// =================================================
                 TextFormField(
                   controller: _codeController,
-                  validator: _requiredValidator,
+                  validator: _codeValidator,
                   enabled: !_isLoading,
                   textCapitalization: TextCapitalization.characters,
                   textInputAction: TextInputAction.next,
@@ -231,7 +399,7 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
                 /// =================================================
                 TextFormField(
                   controller: _locationController,
-                  validator: _requiredValidator,
+                  validator: _locationValidator,
                   enabled: !_isLoading,
                   textInputAction: TextInputAction.next,
                   decoration: _inputDecoration(
@@ -338,6 +506,26 @@ class _CreateLaboratoryPageState extends State<_CreateLaboratoryView> {
                               ),
                             ],
                           ),
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: OutlinedButton.icon(
+                    onPressed: _isLoading ? null : _saveDraftLocally,
+                    icon: const Icon(Icons.save_as_outlined, size: 18),
+                    label: const Text(
+                      'Simpan Draft Lokal',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFF111111),
+                      side: const BorderSide(color: Color(0xFFD8DDD0)),
+                      shape: const StadiumBorder(),
+                    ),
                   ),
                 ),
               ],

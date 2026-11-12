@@ -144,6 +144,12 @@ class _UserManagementPageState extends State<_UserManagementView> {
           ),
         ),
         const SizedBox(width: 16),
+        IconButton(
+          tooltip: 'Permohonan Ubah Email',
+          onPressed: () => context.push('/superadmin/email-requests'),
+          icon: const Icon(Icons.mark_email_unread_outlined, size: 26, color: Color(0xFF111111)),
+        ),
+        const SizedBox(width: 8),
         Material(
           color: Colors.white,
           shape: const CircleBorder(),

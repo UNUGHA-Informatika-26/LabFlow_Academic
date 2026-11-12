@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../../core/session/app_session_manager.dart';
+import '../../../core/validators/auth_validator.dart';
 import '../domain/user_profile.dart';
 
 class AuthService {
@@ -16,6 +18,22 @@ class AuthService {
   final FirebaseAuth _firebaseAuth;
   final FirebaseFirestore _firestore;
   final AppSessionManager _sessionManager;
+  static final Map<String, UserProfile> _profileCache = <String, UserProfile>{};
+  static int _cacheGeneration = 0;
+
+  /// Menghapus seluruh cache profil di memori dan membatalkan generasi request lama.
+  static void clearProfileCache([String? uid]) {
+    _cacheGeneration++;
+    if (uid != null) {
+      _profileCache.remove(uid);
+    } else {
+      _profileCache.clear();
+    }
+  }
+
+  /// Membaca cache profil untuk pengujian keamanan dan isolasi UID.
+  @visibleForTesting
+  static UserProfile? debugCachedProfile(String uid) => _profileCache[uid];
 
   /// User Firebase yang sedang login.
   User? get currentUser => _firebaseAuth.currentUser;
@@ -30,21 +48,33 @@ class AuthService {
     required String password,
   }) async {
     try {
-      // Login baru tidak boleh mewarisi timestamp dari percobaan sebelumnya.
+      // Login baru tidak boleh mewarisi timestamp atau cache dari akun sebelumnya.
+      clearProfileCache();
       await _sessionManager.clear();
       await _firebaseAuth.signInWithEmailAndPassword(
         email: email.trim(),
         password: password,
       );
 
-      final profile = await _loadCurrentUserProfile();
-      if (!isSupportedRole(profile.role)) {
+      final expectedUid = _firebaseAuth.currentUser?.uid;
+      if (expectedUid == null) {
         await signOut();
         throw const AuthServiceException(
-          'Role akun tidak dikenali.',
-          code: AuthServiceException.invalidRole,
+          'Sesi login tidak ditemukan. Silakan masuk kembali.',
+          code: AuthServiceException.sessionNotFound,
         );
       }
+      final requestGeneration = _cacheGeneration;
+      final profile = await _loadCurrentUserProfile(expectedUid: expectedUid);
+      if (_cacheGeneration != requestGeneration || currentUid != expectedUid) {
+        throw const AuthServiceException(
+          'Sesi login telah berubah. Silakan masuk kembali.',
+          code: AuthServiceException.sessionNotFound,
+        );
+      }
+      _profileCache
+        ..clear()
+        ..[profile.uid] = profile;
       try {
         await _sessionManager.start(profile.uid);
       } catch (_) {
@@ -70,9 +100,51 @@ class AuthService {
   ///
   /// Halaman berdasarkan role tetap memanggil method ini agar
   /// akses tidak hanya bergantung pada routing UI.
-  Future<UserProfile> getCurrentUserProfile() async {
+  Future<UserProfile> getCurrentUserProfile({bool forceRefresh = false}) async {
     await requireValidSession();
-    return _loadCurrentUserProfile();
+    final uid = currentUid;
+    if (uid == null) {
+      await signOut();
+      throw const AuthServiceException(
+        'Sesi login tidak ditemukan. Silakan masuk kembali.',
+        code: AuthServiceException.sessionNotFound,
+      );
+    }
+    // Pastikan cache hanya menyimpan milik UID yang sedang login.
+    if (_profileCache.keys.any((cachedUid) => cachedUid != uid)) {
+      _cacheGeneration++;
+      _profileCache.removeWhere((cachedUid, _) => cachedUid != uid);
+    }
+    if (!forceRefresh && _profileCache.containsKey(uid)) {
+      final cached = _profileCache[uid]!;
+      if (cached.uid == uid &&
+          cached.isActive &&
+          isSupportedRole(cached.role)) {
+        return cached;
+      }
+      _profileCache.remove(uid);
+    }
+    final requestGeneration = _cacheGeneration;
+    final profile = await _loadCurrentUserProfile(expectedUid: uid);
+    if (_cacheGeneration == requestGeneration &&
+        currentUid == uid &&
+        profile.uid == uid &&
+        profile.isActive &&
+        isSupportedRole(profile.role)) {
+      final validSession = await _sessionManager.validFor(uid);
+      if (validSession != null &&
+          _cacheGeneration == requestGeneration &&
+          currentUid == uid) {
+        _profileCache
+          ..clear()
+          ..[profile.uid] = profile;
+        return profile;
+      }
+    }
+    throw const AuthServiceException(
+      'Sesi login telah berubah atau berakhir. Silakan masuk kembali.',
+      code: AuthServiceException.sessionNotFound,
+    );
   }
 
   Future<AppSession> requireValidSession() async {
@@ -88,10 +160,13 @@ class AuthService {
     );
   }
 
-  Future<UserProfile> _loadCurrentUserProfile() async {
+  Future<UserProfile> _loadCurrentUserProfile({
+    required String expectedUid,
+  }) async {
     final user = _firebaseAuth.currentUser;
 
-    if (user == null) {
+    if (user == null || user.uid != expectedUid) {
+      clearProfileCache();
       throw const AuthServiceException(
         'Sesi login tidak ditemukan. Silakan masuk kembali.',
         code: AuthServiceException.sessionNotFound,
@@ -100,8 +175,17 @@ class AuthService {
 
     final profileDocument = await _firestore
         .collection('users')
-        .doc(user.uid)
+        .doc(expectedUid)
         .get();
+
+    // Jika sesi atau UID aktif berubah saat menunggu jaringan, jangan proses hasil lama.
+    final activeUidAfterRead = _firebaseAuth.currentUser?.uid;
+    if (activeUidAfterRead == null || activeUidAfterRead != expectedUid) {
+      throw const AuthServiceException(
+        'Sesi login telah berubah. Silakan masuk kembali.',
+        code: AuthServiceException.sessionNotFound,
+      );
+    }
 
     if (!profileDocument.exists) {
       await signOut();
@@ -125,15 +209,108 @@ class AuthService {
       );
     }
 
+    if (!isSupportedRole(profile.role)) {
+      await signOut();
+
+      throw const AuthServiceException(
+        'Role akun tidak dikenali.',
+        code: AuthServiceException.invalidRole,
+      );
+    }
+
     return profile;
   }
 
   /// Keluar dari Firebase Authentication.
   Future<void> signOut() async {
     try {
+      clearProfileCache();
       await _firebaseAuth.signOut();
     } finally {
+      clearProfileCache();
       await _sessionManager.clear();
+    }
+  }
+
+  /// Mengganti password akun Firebase yang sedang login.
+  ///
+  /// Identitas selalu diambil dari `currentUser`; email atau UID dari input
+  /// pengguna tidak pernah digunakan untuk memilih akun.
+  Future<void> changePassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    final user = _firebaseAuth.currentUser;
+    if (user == null) {
+      throw const AuthServiceException(
+        'Sesi login tidak ditemukan. Silakan masuk kembali.',
+        code: AuthServiceException.sessionNotFound,
+      );
+    }
+
+    final email = user.email?.trim();
+    if (email == null || email.isEmpty) {
+      throw const AuthServiceException(
+        'Email akun tidak tersedia untuk verifikasi.',
+        code: AuthServiceException.invalidCredential,
+      );
+    }
+
+    if (currentPassword.isEmpty) {
+      throw const AuthServiceException(
+        'Password saat ini wajib diisi.',
+        code: AuthServiceException.validation,
+      );
+    }
+
+    final newPasswordError = AuthValidator.validatePassword(newPassword);
+    if (newPasswordError != null) {
+      throw AuthServiceException(
+        newPasswordError,
+        code: AuthServiceException.validation,
+      );
+    }
+
+    if (currentPassword == newPassword) {
+      throw const AuthServiceException(
+        'Password baru harus berbeda dari password saat ini.',
+        code: AuthServiceException.validation,
+      );
+    }
+
+    try {
+      final credential = EmailAuthProvider.credential(
+        email: email,
+        password: currentPassword,
+      );
+      await user.reauthenticateWithCredential(credential);
+      await user.updatePassword(newPassword);
+    } on FirebaseAuthException catch (error) {
+      throw AuthServiceException(
+        _passwordMessage(error.code),
+        code: error.code,
+      );
+    }
+  }
+
+  /// Mengirim tautan reset password tanpa mengungkapkan keberadaan akun.
+  Future<void> sendPasswordResetEmail({required String email}) async {
+    final normalizedEmail = email.trim();
+    final validationError = AuthValidator.validateEmail(normalizedEmail);
+    if (validationError != null) {
+      throw AuthServiceException(
+        validationError,
+        code: AuthServiceException.validation,
+      );
+    }
+
+    try {
+      await _firebaseAuth.sendPasswordResetEmail(email: normalizedEmail);
+    } on FirebaseAuthException catch (error) {
+      throw AuthServiceException(
+        _passwordResetMessage(error.code),
+        code: error.code,
+      );
     }
   }
 
@@ -180,6 +357,39 @@ class AuthService {
         return 'Login gagal. Silakan coba kembali.';
     }
   }
+
+  String _passwordMessage(String code) {
+    switch (code) {
+      case 'wrong-password':
+      case 'invalid-credential':
+        return 'Password saat ini tidak sesuai.';
+      case 'requires-recent-login':
+        return 'Demi keamanan, silakan login kembali lalu ulangi perubahan password.';
+      case 'weak-password':
+        return 'Password baru terlalu lemah.';
+      case 'user-disabled':
+        return 'Akun Anda sedang dinonaktifkan.';
+      case 'user-not-found':
+        return 'Akun tidak dapat ditemukan. Silakan login kembali.';
+      case 'network-request-failed':
+        return 'Tidak dapat terhubung ke internet.';
+      case 'too-many-requests':
+        return 'Terlalu banyak percobaan. Coba lagi nanti.';
+      default:
+        return 'Password tidak dapat diubah. Silakan coba kembali.';
+    }
+  }
+
+  String _passwordResetMessage(String code) {
+    switch (code) {
+      case 'network-request-failed':
+        return 'Tidak dapat terhubung ke internet.';
+      case 'too-many-requests':
+        return 'Terlalu banyak permintaan. Coba lagi nanti.';
+      default:
+        return 'Tautan reset password belum dapat dikirim. Silakan coba lagi.';
+    }
+  }
 }
 
 /// Exception domain untuk proses authentication LabFlow.
@@ -194,6 +404,8 @@ class AuthServiceException implements Exception {
   static const String profileNotFound = 'profile-not-found';
   static const String accountSuspended = 'account-suspended';
   static const String invalidRole = 'invalid-role';
+  static const String invalidCredential = 'invalid-credential';
+  static const String validation = 'validation';
   static const String unknown = 'unknown';
 
   final String message;

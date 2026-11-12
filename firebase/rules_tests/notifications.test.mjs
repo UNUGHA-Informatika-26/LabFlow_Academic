@@ -19,6 +19,7 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
+import { FIRESTORE_HOST, FIRESTORE_PORT } from './emulator_config.mjs';
 
 const rules = readFileSync(resolve('../../firebase/firestore.rules'), 'utf8');
 let environment;
@@ -27,7 +28,7 @@ const clients = {};
 before(async () => {
   environment = await initializeTestEnvironment({
     projectId: 'demo-labflow-notifications-rules',
-    firestore: { rules },
+    firestore: { rules, host: FIRESTORE_HOST, port: FIRESTORE_PORT },
   });
   await environment.clearFirestore();
   await environment.withSecurityRulesDisabled(async (context) => {

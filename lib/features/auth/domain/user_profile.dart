@@ -14,6 +14,8 @@ class UserProfile {
     this.semester,
     this.nip,
     this.nidn,
+    this.pendingEmail,
+    this.emailChangeStatus,
   });
 
   final String uid;
@@ -28,6 +30,8 @@ class UserProfile {
   final int? semester;
   final String? nip;
   final String? nidn;
+  final String? pendingEmail;
+  final String? emailChangeStatus;
 
   bool get isActive => status == 'active';
 
@@ -36,6 +40,11 @@ class UserProfile {
   bool get isLabAdmin => role == 'lab_admin';
 
   bool get isStudent => role == 'student';
+
+  bool get hasPendingEmailChange =>
+      pendingEmail != null &&
+      pendingEmail!.trim().isNotEmpty &&
+      (emailChangeStatus == 'pending' || emailChangeStatus == 'sent');
 
   factory UserProfile.fromDocument(
     DocumentSnapshot<Map<String, dynamic>> document,
@@ -63,6 +72,8 @@ class UserProfile {
       semester: data['semester'] as int?,
       nip: data['nip'] as String?,
       nidn: data['nidn'] as String?,
+      pendingEmail: data['pendingEmail'] as String?,
+      emailChangeStatus: data['emailChangeStatus'] as String?,
     );
   }
 }

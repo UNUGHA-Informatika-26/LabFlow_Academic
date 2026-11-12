@@ -43,6 +43,17 @@ android {
         versionName = flutter.versionName
     }
 
+    flavorDimensions += listOf("environment")
+
+    productFlavors {
+        create("production") {
+            dimension = "environment"
+        }
+        create("localUat") {
+            dimension = "environment"
+        }
+    }
+
     signingConfigs {
         create("release") {
             if (keyPropertiesFile == null) {

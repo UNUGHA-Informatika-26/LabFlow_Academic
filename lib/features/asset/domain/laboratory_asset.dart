@@ -14,6 +14,7 @@ class LaboratoryAsset {
     required this.condition,
     required this.qrValue,
     this.imageUrl = '',
+    this.updatedAt,
   });
 
   final String id;
@@ -28,6 +29,7 @@ class LaboratoryAsset {
   final String condition;
   final String qrValue;
   final String imageUrl;
+  final DateTime? updatedAt;
 
   bool get isAvailable => status == 'available';
 
@@ -45,6 +47,50 @@ class LaboratoryAsset {
 
   bool get hasImage => imageUrl.trim().isNotEmpty;
 
+  Map<String, Object?> toBaselineMap() => {
+    'code': code.trim().toUpperCase(),
+    'name': name.trim(),
+    'category': category.trim(),
+    'description': description.trim(),
+    'location': location.trim(),
+    'stock': stock,
+    'status': status,
+    'condition': condition,
+    'imageUrl': imageUrl.trim(),
+  };
+
+  LaboratoryAsset copyWith({
+    String? id,
+    String? labId,
+    String? code,
+    String? name,
+    String? category,
+    String? description,
+    String? location,
+    int? stock,
+    String? status,
+    String? condition,
+    String? qrValue,
+    String? imageUrl,
+    DateTime? updatedAt,
+  }) {
+    return LaboratoryAsset(
+      id: id ?? this.id,
+      labId: labId ?? this.labId,
+      code: code ?? this.code,
+      name: name ?? this.name,
+      category: category ?? this.category,
+      description: description ?? this.description,
+      location: location ?? this.location,
+      stock: stock ?? this.stock,
+      status: status ?? this.status,
+      condition: condition ?? this.condition,
+      qrValue: qrValue ?? this.qrValue,
+      imageUrl: imageUrl ?? this.imageUrl,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
   factory LaboratoryAsset.fromDocument(
     DocumentSnapshot<Map<String, dynamic>> document,
   ) {
@@ -53,6 +99,14 @@ class LaboratoryAsset {
     if (data == null) {
       throw const FormatException('Data aset laboratorium tidak ditemukan.');
     }
+
+    final rawUpdatedAt = data['updatedAt'];
+    final updatedAt = switch (rawUpdatedAt) {
+      final Timestamp timestamp => timestamp.toDate().toUtc(),
+      final DateTime dateTime => dateTime.toUtc(),
+      final String isoString => DateTime.tryParse(isoString)?.toUtc(),
+      _ => null,
+    };
 
     return LaboratoryAsset(
       id: document.id,
@@ -74,6 +128,7 @@ class LaboratoryAsset {
       // Backward-compatible untuk aset lama yang dibuat
       // sebelum dukungan foto aset diperkenalkan.
       imageUrl: data['imageUrl'] as String? ?? '',
+      updatedAt: updatedAt,
     );
   }
 }

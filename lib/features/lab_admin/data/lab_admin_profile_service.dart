@@ -41,6 +41,21 @@ class LabAdminProfileService {
         );
       }
 
+      final role = (userData['role'] as String? ?? '').trim();
+      final status = (userData['status'] as String? ?? 'active').trim();
+
+      if (status != 'active') {
+        await signOut();
+        throw const LabAdminProfileException(
+          'Akun Anda sedang dinonaktifkan. Hubungi Admin Lab.',
+        );
+      }
+
+      if (role != 'lab_admin') {
+        AuthService.clearProfileCache(user.uid);
+        throw const LabAdminProfileException('Akun ini bukan akun Lab Admin.');
+      }
+
       final membershipsSnapshot = await _firestore
           .collection('lab_memberships')
           .where('userId', isEqualTo: user.uid)

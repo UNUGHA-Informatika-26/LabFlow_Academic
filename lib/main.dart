@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 
 import 'app/app.dart';
+import 'core/config/firebase_emulator_initializer.dart';
 import 'core/session/session_startup_service.dart';
 import 'core/storage/app_preferences.dart';
 import 'core/config/superadmin_whatsapp_config.dart';
@@ -16,6 +17,7 @@ Future<void> main() async {
 
   /// Menghubungkan aplikasi Flutter dengan project Firebase.
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  await FirebaseEmulatorInitializer.initialize();
   await SuperadminWhatsAppConfig.instance.initialize();
   FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 

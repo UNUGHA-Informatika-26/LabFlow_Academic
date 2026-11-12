@@ -228,6 +228,15 @@ class _LoginViewState extends State<_LoginView> {
                     ),
                     const SizedBox(height: 16),
                     _buildLoginButton(isLoading),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: TextButton(
+                        onPressed: isLoading
+                            ? null
+                            : () => context.push('/forgot-password'),
+                        child: const Text('Lupa password?'),
+                      ),
+                    ),
                     const SizedBox(height: 18),
                     _buildContactAdmin(isLoading),
                     const SizedBox(height: 20),
