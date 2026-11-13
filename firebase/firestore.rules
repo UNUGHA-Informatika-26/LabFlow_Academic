@@ -668,6 +668,8 @@ service cloud.firestore {
           && changed.hasOnly(['email', 'emailVerified', 'updatedAt'])
           && request.resource.data.email == request.auth.token.email
           && request.auth.token.email_verified == true
+          && request.resource.data.emailVerified == true
+          && request.resource.data.updatedAt is timestamp
           && request.resource.data.role == resource.data.role
           && request.resource.data.status == resource.data.status;
       }
@@ -727,7 +729,9 @@ service cloud.firestore {
           && resource.data.status == 'approved'
           && request.resource.data.status == 'completed'
           && changed.hasOnly(['status', 'completedAt'])
-          && request.resource.data.completedAt is timestamp
+          && request.auth.token.email_verified == true
+          && request.auth.token.email == resource.data.requestedEmail
+          && request.resource.data.completedAt == request.time
           && request.resource.data.uid == resource.data.uid
           && request.resource.data.currentEmail == resource.data.currentEmail
           && request.resource.data.requestedEmail == resource.data.requestedEmail

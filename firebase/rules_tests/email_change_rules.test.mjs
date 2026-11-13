@@ -7,7 +7,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing';
-import { doc, setDoc, updateDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, updateDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { FIRESTORE_HOST, FIRESTORE_PORT } from './emulator_config.mjs';
 
 const rules = readFileSync(resolve('../../firebase/firestore.rules'), 'utf8');
@@ -119,27 +119,102 @@ test('Superadmin cannot modify original requestedEmail or reason during review',
   }));
 });
 
-test('Requester can complete request after approval and sync verified email', async () => {
-  await assertSucceeds(updateDoc(doc(student, 'email_change_requests', 'req-1'), {
+test('Requester CANNOT complete request if auth token email_verified is false', async () => {
+  const studentUnverified = environment.authenticatedContext('student-1', {
+    email: 'newstudent@labflow.test',
+    email_verified: false,
+  }).firestore();
+
+  await assertFails(updateDoc(doc(studentUnverified, 'email_change_requests', 'req-1'), {
     status: 'completed',
-    completedAt: new Date(),
+    completedAt: serverTimestamp(),
+  }));
+});
+
+test('Requester CANNOT complete request if auth token email differs from requestedEmail', async () => {
+  const studentMismatched = environment.authenticatedContext('student-1', {
+    email: 'other@labflow.test',
+    email_verified: true,
+  }).firestore();
+
+  await assertFails(updateDoc(doc(studentMismatched, 'email_change_requests', 'req-1'), {
+    status: 'completed',
+    completedAt: serverTimestamp(),
+  }));
+});
+
+test('Requester CANNOT complete request if completedAt is not serverTimestamp', async () => {
+  const studentVerified = environment.authenticatedContext('student-1', {
+    email: 'newstudent@labflow.test',
+    email_verified: true,
+  }).firestore();
+
+  await assertFails(updateDoc(doc(studentVerified, 'email_change_requests', 'req-1'), {
+    status: 'completed',
+    completedAt: new Date(Date.now() - 10000),
+  }));
+});
+
+test('Requester can complete request only with matching verified auth token and serverTimestamp', async () => {
+  const studentVerified = environment.authenticatedContext('student-1', {
+    email: 'newstudent@labflow.test',
+    email_verified: true,
+  }).firestore();
+
+  await assertSucceeds(updateDoc(doc(studentVerified, 'email_change_requests', 'req-1'), {
+    status: 'completed',
+    completedAt: serverTimestamp(),
   }));
 });
 
 test('Email synchronization in users/{userId} requires matching verified Auth token email', async () => {
-  // Unverified or mismatched email fails
+  // Unverified email fails
   const studentUnverified = environment.authenticatedContext('student-1', {
-    email: 'unverified@labflow.test',
+    email: 'newstudent@labflow.test',
     email_verified: false,
   }).firestore();
 
   await assertFails(updateDoc(doc(studentUnverified, 'users', 'student-1'), {
-    email: 'unverified@labflow.test',
+    email: 'newstudent@labflow.test',
+    emailVerified: true,
+    updatedAt: new Date(),
+  }));
+
+  // Mismatched token email fails
+  const studentMismatched = environment.authenticatedContext('student-1', {
+    email: 'other@labflow.test',
+    email_verified: true,
+  }).firestore();
+
+  await assertFails(updateDoc(doc(studentMismatched, 'users', 'student-1'), {
+    email: 'newstudent@labflow.test',
+    emailVerified: true,
+    updatedAt: new Date(),
+  }));
+});
+
+test('Email sync is rejected if payload emailVerified is false or updatedAt is invalid', async () => {
+  const studentVerified = environment.authenticatedContext('student-1', {
+    email: 'newstudent@labflow.test',
+    email_verified: true,
+  }).firestore();
+
+  // emailVerified on payload false fails
+  await assertFails(updateDoc(doc(studentVerified, 'users', 'student-1'), {
+    email: 'newstudent@labflow.test',
     emailVerified: false,
     updatedAt: new Date(),
   }));
 
-  // Verified matching email succeeds
+  // updatedAt not a valid timestamp fails
+  await assertFails(updateDoc(doc(studentVerified, 'users', 'student-1'), {
+    email: 'newstudent@labflow.test',
+    emailVerified: true,
+    updatedAt: 'not-a-timestamp',
+  }));
+});
+
+test('Email sync succeeds when matching verified token and valid payload are provided', async () => {
   const studentVerified = environment.authenticatedContext('student-1', {
     email: 'newstudent@labflow.test',
     email_verified: true,
@@ -154,14 +229,23 @@ test('Email synchronization in users/{userId} requires matching verified Auth to
 
 test('Email sync cannot alter user role or status', async () => {
   const studentVerified = environment.authenticatedContext('student-1', {
-    email: 'newstudent2@labflow.test',
+    email: 'newstudent@labflow.test',
     email_verified: true,
   }).firestore();
 
+  // Try altering role
   await assertFails(updateDoc(doc(studentVerified, 'users', 'student-1'), {
-    email: 'newstudent2@labflow.test',
+    email: 'newstudent@labflow.test',
     emailVerified: true,
     role: 'superadmin',
+    updatedAt: new Date(),
+  }));
+
+  // Try altering status
+  await assertFails(updateDoc(doc(studentVerified, 'users', 'student-1'), {
+    email: 'newstudent@labflow.test',
+    emailVerified: true,
+    status: 'inactive',
     updatedAt: new Date(),
   }));
 });
